@@ -9,7 +9,7 @@ Fable II for Apple Silicon Macs, as a native app. **Bring your own game:** this 
 
 ## Install
 
-1. Download **Fable2RecompMac-1.0.zip**, open it and move **Fable 2.app** to Applications.
+1. Download **Fable2RecompMac-1.0-mac-native-arm64.dmg**, open it and drag **Fable 2.app** to Applications.
 2. The first time you open it, macOS blocks the app because it isn't signed by Apple (this is a free hobby project without an Apple developer account):
    - **macOS 15 or later:** double-click it, click **Done**, then go to **System Settings → Privacy & Security**, scroll down and click **Open Anyway**.
    - **macOS 14:** right-click the app, choose **Open**, then click **Open**.

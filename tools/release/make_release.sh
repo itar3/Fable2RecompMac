@@ -1,6 +1,7 @@
 #!/bin/bash
 # Makes the release app, out/release/Fable 2.app, and its download,
-# out/release/Fable2RecompMac-<version>.zip.
+# out/release/Fable2RecompMac-<version>-mac-native-arm64.dmg (the app next to
+# an Applications shortcut, to drag it there).
 #
 # The app carries no game code: no Fable2 executable, nothing from generated/
 # or a shader dump. It is the launcher (tools/launcher) in release mode, with
@@ -126,10 +127,16 @@ mv "$OUT/payload.tar.xz" "$APP/Contents/Resources/"
 codesign --force --deep --sign - "$APP"
 codesign --verify --deep "$APP"
 
-step "Zip"
-ZIP="$OUT/Fable2RecompMac-$VERSION.zip"
-rm -f "$ZIP"
-ditto -c -k --keepParent "$APP" "$ZIP"
-ls -lh "$ZIP"
+step "Disk image"
+DMG="$OUT/Fable2RecompMac-$VERSION-mac-native-arm64.dmg"
+DMG_ROOT="$OUT/dmg"
+rm -rf "$DMG" "$DMG_ROOT"
+mkdir -p "$DMG_ROOT"
+ditto "$APP" "$DMG_ROOT/Fable 2.app"
+ln -s /Applications "$DMG_ROOT/Applications"
+hdiutil create -quiet -volname "Fable 2" -srcfolder "$DMG_ROOT" -fs HFS+ -format UDZO -ov "$DMG"
+rm -rf "$DMG_ROOT"
+hdiutil verify -quiet "$DMG"
+ls -lh "$DMG"
 echo
 echo "Done: $APP ($STAMP)"

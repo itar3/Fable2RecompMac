@@ -56,9 +56,9 @@ update you give it before installing.
 
 ### The app (easiest)
 
-1. Download `Fable2RecompMac-<version>.zip` from
+1. Download `Fable2RecompMac-<version>-mac-native-arm64.dmg` from
    [Releases](https://github.com/itar3/Fable2RecompMac/releases), open it and
-   move **Fable 2.app** to Applications.
+   drag **Fable 2.app** to Applications.
 2. Open it the first time. The app isn't signed by Apple (this is a free
    hobby project with no Apple developer account), so macOS blocks it once:
    - **macOS 15 or later:** double-click it, click **Done** in the warning,
