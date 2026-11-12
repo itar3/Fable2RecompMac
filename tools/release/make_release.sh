@@ -14,6 +14,7 @@
 # open it the first time with right-click -> Open.
 #
 # Usage: REXSDK=<ReXGlue SDK> tools/release/make_release.sh [version]
+# (ALLOW_CHANGES=1 includes uncommitted changes, for test builds only.)
 # Needs: Xcode (the launcher is SwiftUI), the game's build in
 # out/build/mac-arm64-native (for fable2-extract), and the network the first
 # time (CMake and Ninja are downloaded into out/release/downloads).
@@ -43,6 +44,8 @@ mkdir -p "$OUT"
 TREE=HEAD
 STAMP="$VERSION ($(git rev-parse --short HEAD))"
 if [ -n "$(git status --porcelain --ignore-submodules=dirty)" ]; then
+  # Uncommitted and untracked files would go into a public download: only for test builds.
+  [ "${ALLOW_CHANGES:-0}" = 1 ] || fail "uncommitted changes (git status); commit them, or ALLOW_CHANGES=1 for a test build"
   rm -f "$OUT/index.tmp"
   TREE="$(GIT_INDEX_FILE="$OUT/index.tmp" bash -c 'git read-tree HEAD && git add -A && git write-tree')"
   rm -f "$OUT/index.tmp"
