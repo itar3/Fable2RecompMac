@@ -13,7 +13,7 @@ GPU.
 source.
 
 <p align="center">
-  <img src="docs/images/screenshot-bowerstone.jpg" alt="Fable 2 running natively on a Mac: Bowerstone in winter" width="640">
+  <img src="docs/images/screenshot-bowerstone-clocktower.jpg" alt="Fable 2 running natively on a Mac: the hero and his dog in Bowerstone Market" width="640">
 </p>
 
 **You need your own copy of the game.** This repository and its download
