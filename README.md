@@ -16,9 +16,11 @@ source.
   <img src="docs/images/screenshot-bowerstone-clocktower.jpg" alt="Fable 2 running natively on a Mac: the hero and his dog in Bowerstone Market" width="640">
 </p>
 
-**You need your own copy of the game.** This repository and its download
-contain no game files, no recompiled game code and no game shaders: your copy
-is recompiled and translated on your Mac.
+**You need your own copy of the game: a Fable II disc image (`.iso`) and
+its Title Update 1** (title updates aren't on the disc; you need the one made
+for your disc's media ID). This repository and its download contain no game
+files, no recompiled game code and no game shaders: your copy is recompiled
+and translated on your Mac.
 
 ## Status: 1.1
 

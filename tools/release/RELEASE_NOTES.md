@@ -1,4 +1,4 @@
-Fable II for Apple Silicon Macs, as a native app. **Bring your own game:** this download contains no game files and no game code. The app installs your copy and builds the game from it on your Mac.
+Fable II for Apple Silicon Macs, as a native app. **You need your own Fable II disc image (`.iso`) and its Title Update 1** (title updates aren't on the disc; you need the one for your disc's media ID). This download contains no game files and no game code: the app installs your copy and builds the game from it on your Mac.
 
 ## New in 1.1: keyboard and mouse
 
