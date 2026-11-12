@@ -20,7 +20,7 @@ source.
 contain no game files, no recompiled game code and no game shaders: your copy
 is recompiled and translated on your Mac.
 
-## Status: 1.0
+## Status: 1.1
 
 The whole game is playable on Apple Silicon (tested on an M4 Pro, macOS 27):
 
@@ -37,6 +37,9 @@ The whole game is playable on Apple Silicon (tested on an M4 Pro, macOS 27):
   core less at the same frame rate).
 - A ready-made download: the app installs your game and builds it on your
   Mac by itself, no SDK or Terminal needed.
+- Keyboard and mouse (1.1): WASD, mouse camera with adjustable sensitivity,
+  mouse buttons for melee and ranged, and every key rebindable in the
+  launcher (Key bindings…). A controller works alongside.
 
 ## What you need
 

@@ -45,6 +45,35 @@ the same without dialogs.
 
 Building the launcher needs Xcode (SwiftUI); without `xcrun` it is skipped.
 
+### Keyboard and mouse
+
+The launcher's **Controls** section turns keyboard and mouse on (the
+default; a controller keeps working alongside), lets the mouse move the
+camera, and sets its sensitivity. **Key bindings…** lists every controller
+input with two key slots: click a slot, then press a key (with Shift, Control
+or Option if you like) or click a mouse button (left, right or middle); Esc
+cancels, right-click clears a slot, and a key already in use moves to the new
+input. Keys are by position, as on a US keyboard, so WASD stays under your
+fingers on any layout. Defaults:
+
+| Input | Keys |
+|---|---|
+| Move | W A S D |
+| Camera | mouse, or I J K L |
+| A (interact, confirm) | Space, E |
+| B (magic, back) | Q, Delete |
+| X (melee) | left click, F |
+| Y (ranged) | right click, R |
+| LB / RB / LT / RT | 1 / 2 / Z / C |
+| D-pad | arrow keys |
+| Start / Back | Return or Esc / Tab or M |
+| Left / right stick click | V / middle click or G |
+
+While the game has the mouse it hides the pointer; switch apps (⌘-Tab) to get
+it back. From Terminal the same comes from `--mnk_mode=true --mnk_mouse=true
+--mnk_sensitivity=1.0 --keybind_a=Space,E ...` (ReXGlue's keyboard and mouse
+driver).
+
 ### From Terminal
 
 Always start the game from the build folder, and only one copy at a time:

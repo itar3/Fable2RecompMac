@@ -810,6 +810,248 @@ extension Installer {
   }
 }
 
+// MARK: - Keyboard and mouse
+
+/// One controller input the keyboard and mouse can drive: the game's
+/// --keybind_<id> option (ReXGlue's keyboard/mouse driver), its label here and
+/// its default keys. Keys are ReXGlue key names by physical position (as on a
+/// US keyboard), comma-separated alternatives, with optional Shift+/Ctrl+/Alt+.
+struct KeyBinding: Identifiable {
+  let id: String
+  let label: String
+  let defaults: String
+}
+
+let keyBindingGroups: [(title: String, bindings: [KeyBinding])] = [
+  ("Movement and camera", [
+    KeyBinding(id: "lstick_up", label: "Move forward", defaults: "W"),
+    KeyBinding(id: "lstick_down", label: "Move back", defaults: "S"),
+    KeyBinding(id: "lstick_left", label: "Move left", defaults: "A"),
+    KeyBinding(id: "lstick_right", label: "Move right", defaults: "D"),
+    KeyBinding(id: "lstick_press", label: "Left stick click", defaults: "V"),
+    KeyBinding(id: "rstick_up", label: "Camera up", defaults: "I"),
+    KeyBinding(id: "rstick_down", label: "Camera down", defaults: "K"),
+    KeyBinding(id: "rstick_left", label: "Camera left", defaults: "J"),
+    KeyBinding(id: "rstick_right", label: "Camera right", defaults: "L"),
+    KeyBinding(id: "rstick_press", label: "Right stick click", defaults: "MMB,G"),
+  ]),
+  ("Controller buttons", [
+    KeyBinding(id: "a", label: "A (interact, confirm)", defaults: "Space,E"),
+    KeyBinding(id: "b", label: "B (magic, back)", defaults: "Q,Backspace"),
+    KeyBinding(id: "x", label: "X (melee)", defaults: "LMB,F"),
+    KeyBinding(id: "y", label: "Y (ranged)", defaults: "RMB,R"),
+    KeyBinding(id: "left_shoulder", label: "LB", defaults: "1"),
+    KeyBinding(id: "right_shoulder", label: "RB", defaults: "2"),
+    KeyBinding(id: "left_trigger", label: "LT", defaults: "Z"),
+    KeyBinding(id: "right_trigger", label: "RT", defaults: "C"),
+    KeyBinding(id: "dpad_up", label: "D-pad up", defaults: "Up"),
+    KeyBinding(id: "dpad_down", label: "D-pad down", defaults: "Down"),
+    KeyBinding(id: "dpad_left", label: "D-pad left", defaults: "Left"),
+    KeyBinding(id: "dpad_right", label: "D-pad right", defaults: "Right"),
+    KeyBinding(id: "back", label: "Back", defaults: "Tab,M"),
+    KeyBinding(id: "start", label: "Start (pause menu)", defaults: "Return,Escape"),
+  ]),
+]
+
+enum KeyBindings {
+  static var all: [KeyBinding] { keyBindingGroups.flatMap(\.bindings) }
+
+  static func keys(_ binding: KeyBinding) -> [String] {
+    let value = UserDefaults.standard.string(forKey: "keybind." + binding.id) ?? binding.defaults
+    return value.split(separator: ",").map(String.init)
+  }
+
+  static func set(_ binding: KeyBinding, _ keys: [String]) {
+    let value = keys.joined(separator: ",")
+    if value == binding.defaults {
+      UserDefaults.standard.removeObject(forKey: "keybind." + binding.id)
+    } else {
+      UserDefaults.standard.set(value, forKey: "keybind." + binding.id)
+    }
+  }
+
+  static func restoreDefaults() {
+    for binding in all { UserDefaults.standard.removeObject(forKey: "keybind." + binding.id) }
+  }
+
+  /// The game's options for every binding ("None" for an input with no key).
+  static func arguments() -> [String] {
+    all.map { binding in
+      let value = keys(binding).joined(separator: ",")
+      return "--keybind_\(binding.id)=\(value.isEmpty ? "None" : value)"
+    }
+  }
+
+  /// ReXGlue's name of a key by its position (macOS key code, US layout).
+  static let names: [UInt16: String] = [
+    0: "A", 1: "S", 2: "D", 3: "F", 4: "H", 5: "G", 6: "Z", 7: "X", 8: "C", 9: "V", 11: "B", 12: "Q", 13: "W",
+    14: "E", 15: "R", 16: "Y", 17: "T", 18: "1", 19: "2", 20: "3", 21: "4", 22: "6", 23: "5", 24: "Plus", 25: "9",
+    26: "7", 27: "Minus", 28: "8", 29: "0", 30: "RBracket", 31: "O", 32: "U", 33: "LBracket", 34: "I", 35: "P",
+    36: "Return", 37: "L", 38: "J", 39: "Quote", 40: "K", 41: "Semicolon", 42: "Backslash", 43: "Comma",
+    44: "Slash", 45: "N", 46: "M", 47: "Period", 48: "Tab", 49: "Space", 50: "Backtick", 51: "Backspace",
+    53: "Escape", 67: "NumpadStar", 69: "NumpadPlus", 75: "NumpadSlash", 76: "NumpadEnter", 78: "NumpadMinus",
+    82: "Numpad0", 83: "Numpad1", 84: "Numpad2", 85: "Numpad3", 86: "Numpad4", 87: "Numpad5", 88: "Numpad6",
+    89: "Numpad7", 91: "Numpad8", 92: "Numpad9", 122: "F1", 120: "F2", 99: "F3", 118: "F4", 96: "F5", 97: "F6",
+    98: "F7", 100: "F8", 101: "F9", 109: "F10", 103: "F11", 111: "F12", 105: "F13", 107: "F14", 113: "F15",
+    106: "F16", 64: "F17", 79: "F18", 80: "F19", 90: "F20", 114: "Insert", 115: "Home", 116: "PageUp",
+    117: "Delete", 119: "End", 121: "PageDown", 123: "Left", 124: "Right", 125: "Down", 126: "Up",
+  ]
+
+  /// How a key name is shown (Mac key labels).
+  static func label(_ name: String) -> String {
+    var rest = Substring(name), prefix = ""
+    for (modifier, symbol) in [("Shift+", "⇧"), ("Ctrl+", "⌃"), ("Alt+", "⌥")] where rest.hasPrefix(modifier) {
+      prefix += symbol
+      rest = rest.dropFirst(modifier.count)
+    }
+    let labels = ["LMB": "Left click", "RMB": "Right click", "MMB": "Middle click", "Backspace": "Delete",
+                  "Delete": "Fwd Delete", "Escape": "Esc", "Up": "↑", "Down": "↓", "Left": "←", "Right": "→",
+                  "Plus": "=", "Minus": "-", "LBracket": "[", "RBracket": "]", "Semicolon": ";", "Quote": "'",
+                  "Backslash": "\\", "Comma": ",", "Period": ".", "Slash": "/", "Backtick": "`"]
+    return prefix + (labels[String(rest)] ?? String(rest))
+  }
+}
+
+/// The key bindings window: each input with two key slots. Click a slot, then
+/// press a key (with Shift, Control or Option if wanted) or click a mouse
+/// button; Esc cancels. A key moves away from the input that had it.
+struct KeyBindingsView: View {
+  @Environment(\.dismiss) private var dismiss
+  @State private var keys: [String: [String]] = [:]
+  @State private var capturing: (id: String, slot: Int)?
+  @State private var monitor: Any?
+  @State private var note: String?
+
+  var body: some View {
+    VStack(spacing: 0) {
+      Form {
+        ForEach(keyBindingGroups, id: \.title) { group in
+          Section(group.title) {
+            ForEach(group.bindings) { binding in
+              HStack {
+                Text(binding.label)
+                Spacer()
+                slot(binding, 0)
+                slot(binding, 1)
+              }
+            }
+          }
+        }
+      }
+      .formStyle(.grouped)
+      HStack {
+        Text(note ?? "Click a slot, then press a key or click a mouse button (Esc cancels). Right-click a slot to "
+             + "clear it. A controller works alongside.")
+          .font(.callout).foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+        Spacer()
+        Button("Restore defaults") {
+          KeyBindings.restoreDefaults()
+          load()
+          note = "Default keys restored."
+        }
+        Button("Done") { dismiss() }
+          .keyboardShortcut(.defaultAction)
+      }
+      .padding(16)
+    }
+    .frame(width: 520, height: 680)
+    .onAppear(perform: load)
+    .onDisappear(perform: stopCapture)
+  }
+
+  private func load() {
+    keys = Dictionary(uniqueKeysWithValues: KeyBindings.all.map { ($0.id, KeyBindings.keys($0)) })
+  }
+
+  @ViewBuilder private func slot(_ binding: KeyBinding, _ index: Int) -> some View {
+    let current = keys[binding.id] ?? []
+    let active = capturing?.id == binding.id && capturing?.slot == index
+    Button {
+      startCapture(binding.id, index)
+    } label: {
+      Text(active ? "Press…" : (index < current.count ? KeyBindings.label(current[index]) : " "))
+        .frame(width: 92)
+    }
+    .buttonStyle(.bordered)
+    .tint(active ? .accentColor : nil)
+    .contextMenu {
+      if index < current.count {
+        Button("Clear") { assign(nil, to: binding.id, slot: index) }
+      }
+    }
+  }
+
+  private func startCapture(_ id: String, _ slot: Int) {
+    stopCapture()
+    capturing = (id, slot)
+    note = nil
+    // Starts after this click, so the click that opened the slot isn't taken as a binding.
+    DispatchQueue.main.async {
+      monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseDown, .rightMouseDown,
+                                                             .otherMouseDown]) { event in
+        capture(event)
+        return nil
+      }
+    }
+  }
+
+  private func stopCapture() {
+    if let monitor { NSEvent.removeMonitor(monitor) }
+    monitor = nil
+    capturing = nil
+  }
+
+  private func capture(_ event: NSEvent) {
+    guard let (id, slot) = capturing else { return }
+    var name: String?
+    switch event.type {
+    case .leftMouseDown: name = "LMB"
+    case .rightMouseDown: name = "RMB"
+    case .otherMouseDown:
+      name = event.buttonNumber == 2 ? "MMB" : nil
+      if name == nil { note = "Only the left, right and middle mouse buttons can be used." }
+    case .keyDown:
+      if event.keyCode == 53 && event.modifierFlags.intersection([.shift, .control, .option]).isEmpty {
+        return stopCapture()  // Esc cancels
+      }
+      if event.modifierFlags.contains(.command) {
+        note = "Command shortcuts can't be used."
+      } else if let key = KeyBindings.names[event.keyCode] {
+        var prefix = ""
+        if event.modifierFlags.contains(.shift) { prefix += "Shift+" }
+        if event.modifierFlags.contains(.control) { prefix += "Ctrl+" }
+        if event.modifierFlags.contains(.option) { prefix += "Alt+" }
+        name = prefix + key
+      } else {
+        note = "That key can't be used."
+      }
+    default: break
+    }
+    stopCapture()
+    if let name { assign(name, to: id, slot: slot) }
+  }
+
+  /// Puts a key in a slot (nil clears it); the key leaves any other input that had it.
+  private func assign(_ name: String?, to id: String, slot: Int) {
+    if let name {
+      for binding in KeyBindings.all where binding.id != id && (keys[binding.id] ?? []).contains(name) {
+        keys[binding.id]?.removeAll { $0 == name }
+        note = "\(KeyBindings.label(name)) moved from \(binding.label)."
+      }
+    }
+    var current = keys[id] ?? []
+    if let name {
+      current.removeAll { $0 == name }
+      if slot < current.count { current[slot] = name } else { current.append(name) }
+    } else if slot < current.count {
+      current.remove(at: slot)
+    }
+    keys[id] = current
+    for binding in KeyBindings.all { KeyBindings.set(binding, keys[binding.id] ?? []) }
+  }
+}
+
 // MARK: - Window
 
 struct SettingsView: View {
@@ -821,6 +1063,10 @@ struct SettingsView: View {
   @AppStorage("vsync") private var vsync = true
   @AppStorage("powerSaving") private var powerSaving = true
   @AppStorage("titleFps") private var titleFps = true
+  @AppStorage("keyboardMouse") private var keyboardMouse = true
+  @AppStorage("mouseLook") private var mouseLook = true
+  @AppStorage("mouseSensitivity") private var mouseSensitivity = 1.0
+  @State private var showKeyBindings = false
 
   @StateObject private var installer = Installer(paths: GamePaths.load())
   @State private var starting = false
@@ -862,6 +1108,28 @@ struct SettingsView: View {
           Text("Power saving lets idle game threads sleep instead of spinning: less CPU and heat, same frame rate.")
             .font(.caption).foregroundStyle(.secondary)
         }
+        Section("Controls") {
+          Toggle("Keyboard and mouse", isOn: $keyboardMouse)
+          if keyboardMouse {
+            Toggle("Mouse moves the camera", isOn: $mouseLook)
+            if mouseLook {
+              HStack {
+                Text("Mouse sensitivity")
+                Slider(value: $mouseSensitivity, in: 0.2...3.0)
+                Text(String(format: "%.1f", mouseSensitivity)).monospacedDigit().frame(width: 30)
+              }
+            }
+            HStack {
+              Text("WASD moves, the mouse buttons attack (melee, ranged), Space or E interacts.")
+                .font(.caption).foregroundStyle(.secondary)
+              Spacer()
+              Button("Key bindings…") { showKeyBindings = true }
+            }
+          }
+          Text("A controller always works too. Switch apps (⌘-Tab) to get the mouse pointer back.")
+            .font(.caption).foregroundStyle(.secondary)
+        }
+        .sheet(isPresented: $showKeyBindings) { KeyBindingsView() }
         Section("Info") {
           Toggle("Show frame rate in the window title", isOn: $titleFps)
           Text("In the game, F8 shows the overlay.")
@@ -1050,11 +1318,19 @@ struct SettingsView: View {
     }
   }
 
+  /// Keyboard and mouse: ReXGlue's driver, which the game merges with a controller.
+  private func controlArguments() -> [String] {
+    guard keyboardMouse else { return ["--mnk_mode=false"] }
+    return ["--mnk_mode=true", "--mnk_mouse=\(mouseLook)", String(format: "--mnk_sensitivity=%.2f", mouseSensitivity)]
+      + KeyBindings.arguments()
+  }
+
   private func play() {
     starting = true
     let args = Launcher.arguments(paths: paths, mode: mode, windowSize: windowSize, resolution: resolution,
                                   renderScale: renderScale, frameCap: frameCap, vsync: vsync,
                                   powerSaving: powerSaving, titleFps: titleFps)
+      + controlArguments()
     if let error = Launcher.start(paths: paths, arguments: args) {
       installer.message = error
       installer.messageIsError = true
