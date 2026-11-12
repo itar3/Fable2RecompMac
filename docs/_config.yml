@@ -1,0 +1,10 @@
+# GitHub Pages: the project's website (docs/index.html) and its guides.
+title: Fable 2 for Mac (Fable2RecompMac)
+description: Play Fable 2 (Fable II) natively on Apple Silicon Macs (M1, M2, M3, M4). A free native macOS port; bring your own copy of the game.
+url: https://itar3.github.io
+baseurl: /Fable2RecompMac
+plugins:
+  - jekyll-sitemap
+  - jekyll-seo-tag
+  - jekyll-relative-links
+  - jekyll-optional-front-matter

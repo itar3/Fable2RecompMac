@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fable 2 for Mac: native Apple Silicon port (Fable2RecompMac)</title>
+<meta name="description" content="Play Fable 2 (Fable II) natively on your Mac. A free native macOS port for Apple Silicon (M1, M2, M3, M4), not an emulator: 60 fps at Retina resolution with a Metal renderer. Bring your own copy of the game.">
+<link rel="canonical" href="https://itar3.github.io/Fable2RecompMac/">
+<link rel="icon" type="image/png" href="images/favicon.png">
+<link rel="apple-touch-icon" href="images/icon-256.png">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Fable2RecompMac">
+<meta property="og:title" content="Fable 2 for Mac: native Apple Silicon port">
+<meta property="og:description" content="Play Fable 2 natively on M1, M2, M3 and M4 Macs. Free, open source, bring your own copy of the game.">
+<meta property="og:url" content="https://itar3.github.io/Fable2RecompMac/">
+<meta property="og:image" content="https://itar3.github.io/Fable2RecompMac/images/social-card.png">
+<meta property="og:image:width" content="1280">
+<meta property="og:image:height" content="640">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Fable 2 for Mac: native Apple Silicon port">
+<meta name="twitter:description" content="Play Fable 2 natively on M1, M2, M3 and M4 Macs. Free, open source, bring your own copy of the game.">
+<meta name="twitter:image" content="https://itar3.github.io/Fable2RecompMac/images/social-card.png">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Fable2RecompMac",
+  "alternateName": ["Fable 2 for Mac", "Fable II for Mac"],
+  "description": "A native macOS port of Fable II for Apple Silicon Macs, built from the player's own copy of the game.",
+  "applicationCategory": "GameApplication",
+  "operatingSystem": "macOS 14 or later (Apple Silicon)",
+  "softwareVersion": "1.0",
+  "downloadUrl": "https://github.com/itar3/Fable2RecompMac/releases/latest",
+  "codeRepository": "https://github.com/itar3/Fable2RecompMac",
+  "image": "https://itar3.github.io/Fable2RecompMac/images/screenshot-bowerstone.jpg",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+}
+</script>
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {"@type": "Question", "name": "Can I play Fable 2 on a Mac?",
+     "acceptedAnswer": {"@type": "Answer", "text": "Yes. Fable2RecompMac is a free native macOS port of Fable II for Apple Silicon Macs (M1 or newer, macOS 14 or later). You need your own copy of the Xbox 360 game and its title update 1."}},
+    {"@type": "Question", "name": "Does Fable 2 run on M1, M2, M3 and M4 Macs?",
+     "acceptedAnswer": {"@type": "Answer", "text": "Yes. The port runs natively on every Apple Silicon Mac. It isn't an emulator: the game's code is recompiled to ARM64 and drawn through Metal."}},
+    {"@type": "Question", "name": "Is the game included?",
+     "acceptedAnswer": {"@type": "Answer", "text": "No. The download contains no game files or game code. The app installs your own disc image and builds the game from it on your Mac."}}
+  ]
+}
+</script>
+<style>
+  :root {
+    --bg: #0d1128; --bg2: #161d44; --text: #e7e9f3; --muted: #a9afc8;
+    --gold: #f0c35e; --gold-dark: #b9802a; --line: rgba(240, 195, 94, 0.25);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 17px/1.6 -apple-system, BlinkMacSystemFont, "Helvetica Neue", Arial, sans-serif;
+  }
+  a { color: var(--gold); }
+  .wrap { max-width: 920px; margin: 0 auto; padding: 0 16px; }
+  header {
+    background: radial-gradient(ellipse at 30% 60%, rgba(255, 207, 122, 0.18), transparent 60%),
+                linear-gradient(160deg, #0b0f24, #1b2552 60%, #2c3768);
+    padding: 56px 0 48px; border-bottom: 1px solid var(--line);
+  }
+  .hero { display: flex; gap: 32px; align-items: center; flex-wrap: wrap; }
+  .hero img { width: 160px; height: 160px; }
+  .hero div { flex: 1; min-width: 260px; }
+  h1 { font-family: Baskerville, "Times New Roman", serif; font-size: 52px; line-height: 1.1; margin: 0 0 12px; }
+  h1 span { color: var(--gold); }
+  .lead { font-size: 19px; color: var(--muted); margin: 0 0 24px; }
+  .buttons { display: flex; gap: 12px; flex-wrap: wrap; }
+  .button {
+    display: inline-block; padding: 12px 22px; border-radius: 10px; font-weight: 600; text-decoration: none;
+  }
+  .primary { background: linear-gradient(180deg, var(--gold), var(--gold-dark)); color: #1a1205; }
+  .secondary { border: 1px solid var(--line); color: var(--text); }
+  main section { padding: 36px 0; border-bottom: 1px solid var(--line); }
+  h2 { font-family: Baskerville, "Times New Roman", serif; font-size: 30px; margin: 0 0 16px; color: var(--gold); }
+  figure { margin: 0; }
+  figure img { width: 100%; height: auto; border-radius: 12px; border: 1px solid var(--line); display: block; }
+  figcaption { color: var(--muted); font-size: 14px; margin-top: 8px; text-align: center; }
+  ul, ol { padding-left: 22px; }
+  li { margin: 6px 0; }
+  code { background: var(--bg2); padding: 2px 6px; border-radius: 5px; font-size: 15px; }
+  .faq h3 { font-size: 18px; margin: 20px 0 4px; }
+  .faq p { margin: 0; color: var(--muted); }
+  footer { color: var(--muted); font-size: 14px; padding: 28px 0 48px; }
+  @media (max-width: 600px) {
+    h1 { font-size: 38px; }
+    .hero img { width: 112px; height: 112px; }
+    header { padding: 36px 0 32px; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap hero">
+    <img src="images/icon-256.png" alt="Fable2RecompMac app icon">
+    <div>
+      <h1><span>Fable 2</span> for Mac</h1>
+      <p class="lead">Play Fable II natively on Apple Silicon: M1, M2, M3, M4 and newer. Not an emulator: the
+        game's Xbox 360 code is recompiled to native ARM64 and drawn through Metal, at up to 60 fps in Retina
+        resolution. Free and open source. Bring your own copy of the game.</p>
+      <div class="buttons">
+        <a class="button primary" href="https://github.com/itar3/Fable2RecompMac/releases/latest">Download for Mac</a>
+        <a class="button secondary" href="https://github.com/itar3/Fable2RecompMac">Source on GitHub</a>
+      </div>
+    </div>
+  </div>
+</header>
+<main class="wrap">
+  <section>
+    <figure>
+      <img src="images/screenshot-bowerstone.jpg" width="960" height="540"
+           alt="Fable 2 running natively on a Mac: young Sparrow in snowy Bowerstone">
+      <figcaption>Bowerstone in winter, running natively on an Apple Silicon Mac.</figcaption>
+    </figure>
+  </section>
+  <section>
+    <h2>What you get</h2>
+    <ul>
+      <li>The whole game, playable from start to finish on Apple Silicon Macs.</li>
+      <li>A native Metal renderer (through MoltenVK) at your window's full Retina resolution, or a chosen
+        full-screen resolution.</li>
+      <li>A stable 60 fps nearly everywhere with the frame rate cap.</li>
+      <li>A launcher app with display, frame rate, VSync and power-saving settings.</li>
+      <li>Install from ISO: the app checks your disc and title update, installs them and builds the game on
+        your Mac by itself.</li>
+    </ul>
+  </section>
+  <section>
+    <h2>What you need</h2>
+    <ul>
+      <li>An Apple Silicon Mac (M1 or newer) with macOS 14 or later.</li>
+      <li>Your own Fable II disc image (<code>.iso</code>) and title update 1 for your disc.</li>
+      <li>About 10 GB of free disk space.</li>
+      <li>Apple's Command Line Tools: the app offers to install them if they're missing.</li>
+    </ul>
+  </section>
+  <section>
+    <h2>Install</h2>
+    <ol>
+      <li><a href="https://github.com/itar3/Fable2RecompMac/releases/latest">Download the latest release</a>
+        (<code>.dmg</code>), open it and drag <strong>Fable 2.app</strong> to Applications.</li>
+      <li>The app isn't signed by Apple, so macOS blocks it the first time. On macOS 15 or later, double-click
+        it, click <strong>Done</strong>, then open <strong>System Settings → Privacy &amp; Security</strong> and
+        click <strong>Open Anyway</strong>. On macOS 14, right-click the app and choose <strong>Open</strong>.</li>
+      <li>Click <strong>Choose…</strong> in the Title update row and select the folder with your title
+        updates.</li>
+      <li>Click <strong>Install from ISO…</strong> and choose your disc image. The app installs it and builds the
+        game (2 to 15 minutes, once).</li>
+      <li>Click <strong>Play</strong>.</li>
+    </ol>
+    <p>More detail: <a href="SETUP.html">building from source</a> and <a href="RUNNING.html">running and
+      options</a>.</p>
+  </section>
+  <section class="faq">
+    <h2>Questions</h2>
+    <h3>Can I play Fable 2 on a Mac?</h3>
+    <p>Yes, with this port, on any Apple Silicon Mac with macOS 14 or later, using your own copy of the
+      Xbox 360 game.</p>
+    <h3>Does it work on M1, M2, M3 and M4 Macs?</h3>
+    <p>Yes. It runs natively on every Apple Silicon Mac. Intel Macs aren't supported.</p>
+    <h3>Is the game included?</h3>
+    <p>No. The download contains no game files or game code. The app builds the game from your own disc image
+      on your Mac.</p>
+    <h3>Which discs work?</h3>
+    <p>The Game of the Year discs checked so far (media IDs <code>05FBECEA</code> and <code>716F0A0D</code>),
+      with title update 1. The app checks any disc you give it before installing.</p>
+  </section>
+</main>
+<footer class="wrap">
+  Fable, Fable II, Xbox and Xbox 360 are trademarks of Microsoft Corporation. This project is not affiliated
+  with or endorsed by Microsoft, Xbox Game Studios or Lionhead Studios, and it does not include or distribute
+  any part of the game.
+</footer>
+</body>
+</html>

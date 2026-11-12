@@ -11,6 +11,10 @@ GPU.
 (a Mac app: install your game, it builds itself, play), or build it from
 source.
 
+<p align="center">
+  <img src="docs/images/screenshot-bowerstone.jpg" alt="Fable 2 running natively on a Mac: Bowerstone in winter" width="640">
+</p>
+
 **You need your own copy of the game.** This repository and its download
 contain no game files, no recompiled game code and no game shaders: your copy
 is recompiled and translated on your Mac.
