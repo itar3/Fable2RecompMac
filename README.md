@@ -6,9 +6,9 @@ program is statically recompiled to native ARM64 code with the
 draws its graphics through Metal (via MoltenVK) instead of emulating the Xbox
 GPU.
 
-**You need your own copy of the game.** This repository contains no game
-files, no recompiled game code and no game shaders: the build recompiles and
-translates your copy on your Mac.
+**You need your own copy of the game.** This repository and its download
+contain no game files, no recompiled game code and no game shaders: your copy
+is recompiled and translated on your Mac.
 
 ## Status: 1.0
 
@@ -25,15 +25,18 @@ The whole game is playable on Apple Silicon (tested on an M4 Pro, macOS 27):
   this port runs before installing anything.
 - Power saving: idle game threads sleep instead of spinning (about one CPU
   core less at the same frame rate).
+- A ready-made download: the app installs your game and builds it on your
+  Mac by itself, no SDK or Terminal needed.
 
 ## What you need
 
-- An Apple Silicon Mac, macOS 14 or later.
-- Xcode (for the launcher; its command line tools for the rest), CMake and
-  Ninja.
-- [ReXGlue SDK 0.10.0.24-dev](https://github.com/rexglue/rexglue-sdk/releases).
-- Your own Fable II: a disc image (`.iso`) or a Games on Demand package, and
-  **title update 1** for your disc's media ID.
+- An Apple Silicon Mac (M1 or newer), macOS 14 or later.
+- Your own Fable II disc image (`.iso`) and **title update 1** for your
+  disc's media ID (title updates aren't on the disc).
+- About 10 GB of free disk space (game files 6.5 GB, build about 1 GB, plus
+  room while installing).
+- Apple's Command Line Tools: the app offers to install them when they are
+  missing (free, a few minutes).
 
 ### Which game versions work
 
@@ -51,10 +54,39 @@ update you give it before installing.
 
 ## Getting started
 
+### The app (easiest)
+
+1. Download `Fable2RecompMac-<version>.zip` from
+   [Releases](https://github.com/itar3/Fable2RecompMac/releases), open it and
+   move **Fable 2.app** to Applications.
+2. Open it the first time. The app isn't signed by Apple (this is a free
+   hobby project with no Apple developer account), so macOS blocks it once:
+   - **macOS 15 or later:** double-click it, click **Done** in the warning,
+     then open **System Settings → Privacy & Security**, scroll down to
+     "Fable 2 was blocked…" and click **Open Anyway**.
+   - **macOS 14:** right-click (Control-click) the app, choose **Open**, then
+     **Open** again.
+3. **Install from ISO…**: choose your Fable II disc image. Click **Choose…**
+   in the Title update row first and point it at the folder with your title
+   update packages; the right one is picked by its media ID.
+4. The app then builds the game on your Mac (2 to 15 minutes, once). If the
+   Command Line Tools are missing, it opens Apple's installer: install them,
+   then click **Build**.
+5. Click **Play**.
+
+Everything the app sets up lives in
+`~/Library/Application Support/Fable2RecompMac` (game files, build, build
+log); saves are in `~/.local/share/Fable2`. On the first visit to each area
+after a new install, some things appear a few seconds late while their shaders
+are translated; after that they are kept.
+
+### Building from source
+
 1. Install the SDK, get the code, prepare your game files and build:
    [docs/SETUP.md](docs/SETUP.md).
 2. Play with the launcher (or from Terminal), options and known problems:
    [docs/RUNNING.md](docs/RUNNING.md).
+3. `tools/release/make_release.sh` makes the downloadable app.
 
 The native renderer's design and the Fable II specifics are in
 [docs/NATIVE_RENDERER.md](docs/NATIVE_RENDERER.md); `MACOS_NOTES.md` is the
@@ -66,6 +98,8 @@ port's working log (findings, fixes and debugging switches).
   popping.
 - The first launch after a shader change stutters while Metal compiles the new
   pipelines; later launches are smooth.
+- New installs: the first visit to an area shows missing or white geometry for
+  a few seconds while its shaders are translated (kept for later visits).
 
 ## Support
 

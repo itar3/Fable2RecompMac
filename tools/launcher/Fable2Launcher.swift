@@ -9,6 +9,14 @@
 // with the saved choices; --update-location <path> and --install-iso <path> do
 // what the buttons do, without dialogs.
 //
+// The release app (tools/release/make_release.sh) carries no game code: its
+// Info.plist has Fable2PayloadVersion, and its Resources a payload (this
+// project's source, the ReXGlue SDK, CMake, Ninja and fable2-extract). On the
+// first start of each version the payload is unpacked into
+// ~/Library/Application Support/Fable2RecompMac, and after the game files are
+// installed, Build generates the game's code from the player's own copy and
+// compiles it there (needs Apple's Command Line Tools); --build does the same.
+//
 // A disc is installed only when its program, with title update 1 applied (or
 // built in), loads into exactly the image this build was recompiled from
 // (fable2-extract --image-hash): the media ID and version labels differ between
@@ -53,6 +61,9 @@ struct GamePaths {
   let shaderDumpDir: URL?
   let expectedImageHash: String?
   let expectedImageLabel: String
+  /// Release app: where the payload is unpacked and the game is built, and the payload's version.
+  var workspace: URL? = nil
+  var payloadVersion: String? = nil
 
   static func load() -> GamePaths {
     let info = Bundle.main.infoDictionary ?? [:]
@@ -62,15 +73,26 @@ struct GamePaths {
       return value
     }
     func dir(_ key: String) -> URL? { string(key).map { URL(fileURLWithPath: $0, isDirectory: true) } }
+    let hash = string("Fable2GameImageHash")?.lowercased()
+    let label = string("Fable2GameImageLabel") ?? "the program this build was made from"
+    if let version = string("Fable2PayloadVersion") {
+      let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+      let workspace = support.appendingPathComponent("Fable2RecompMac", isDirectory: true)
+      return GamePaths(gameDir: workspace.appendingPathComponent("build", isDirectory: true),
+                       assetsDir: workspace.appendingPathComponent("assets", isDirectory: true),
+                       shaderDumpDir: nil, expectedImageHash: hash, expectedImageLabel: label,
+                       workspace: workspace, payloadVersion: version)
+    }
     let game = dir("Fable2GameDir") ?? bundleParent
     return GamePaths(gameDir: game, assetsDir: dir("Fable2AssetsDir") ?? game.appendingPathComponent("assets"),
                      shaderDumpDir: dir("Fable2ShaderDumpDir"),
-                     expectedImageHash: string("Fable2GameImageHash")?.lowercased(),
-                     expectedImageLabel: string("Fable2GameImageLabel") ?? "the program this build was made from")
+                     expectedImageHash: hash, expectedImageLabel: label)
   }
 
   var executable: URL { gameDir.appendingPathComponent("Fable2") }
-  var extractor: URL { gameDir.appendingPathComponent("fable2-extract") }
+  var extractor: URL {
+    (workspace?.appendingPathComponent("tools", isDirectory: true) ?? gameDir).appendingPathComponent("fable2-extract")
+  }
   var logsDir: URL { gameDir.appendingPathComponent("logs", isDirectory: true) }
   var gameFiles: URL { assetsDir.appendingPathComponent("game", isDirectory: true) }
   var updateFiles: URL { assetsDir.appendingPathComponent("update", isDirectory: true) }
@@ -168,6 +190,84 @@ struct UpdatePackage {
   }
 }
 
+// MARK: - Running tools
+
+/// The tool the launcher is running (extractor, build), stopped when the launcher quits.
+nonisolated(unsafe) var currentTool: Process?
+
+/// Runs a command-line tool. Each line of its standard output goes to `line`;
+/// the lines it doesn't take (returns false) are returned with the standard
+/// error. Everything it prints also goes to `log`.
+func runTool(_ executable: URL, _ args: [String], directory: URL, environment: [String: String]? = nil,
+             log: FileHandle? = nil, line: @escaping @Sendable (String) -> Bool = { _ in false }) async
+  -> (status: Int32, output: String, errors: String) {
+  await withCheckedContinuation { continuation in
+    let tool = Process()
+    tool.executableURL = executable
+    tool.arguments = args
+    tool.currentDirectoryURL = directory
+    if let environment { tool.environment = environment }
+    let out = Pipe(), err = Pipe()
+    tool.standardOutput = out
+    tool.standardError = err
+    final class Buffers: @unchecked Sendable {
+      let lock = NSLock()
+      var pending = "", output = "", errors = ""
+      func take(_ data: Data, isError: Bool, final: Bool = false) {
+        lock.lock()
+        defer { lock.unlock() }
+        let text = String(decoding: data, as: UTF8.self)
+        if isError {
+          errors += text
+          return
+        }
+        pending += text
+        while let newline = pending.firstIndex(of: "\n") {
+          let text = String(pending[..<newline])
+          pending.removeSubrange(...newline)
+          if !lineHandler(text) { output += text + "\n" }
+        }
+        if final, !pending.isEmpty, !lineHandler(pending) { output += pending }
+      }
+      var lineHandler: (String) -> Bool = { _ in false }
+    }
+    let buffers = Buffers()
+    buffers.lineHandler = line
+    out.fileHandleForReading.readabilityHandler = { handle in
+      let data = handle.availableData
+      guard !data.isEmpty else { return }
+      log?.write(data)
+      buffers.take(data, isError: false)
+    }
+    err.fileHandleForReading.readabilityHandler = { handle in
+      let data = handle.availableData
+      guard !data.isEmpty else { return }
+      log?.write(data)
+      buffers.take(data, isError: true)
+    }
+    tool.terminationHandler = { finished in
+      out.fileHandleForReading.readabilityHandler = nil
+      err.fileHandleForReading.readabilityHandler = nil
+      let rest = out.fileHandleForReading.readDataToEndOfFile()
+      let restErrors = err.fileHandleForReading.readDataToEndOfFile()
+      log?.write(rest)
+      log?.write(restErrors)
+      buffers.take(restErrors, isError: true)
+      buffers.take(rest, isError: false, final: true)
+      buffers.lock.lock()
+      let result = (finished.terminationStatus, buffers.output, buffers.errors)
+      buffers.lock.unlock()
+      continuation.resume(returning: result)
+    }
+    do {
+      try tool.run()
+      currentTool = tool
+    } catch {
+      continuation.resume(returning: (-1, "", error.localizedDescription))
+    }
+  }
+}
+
 // MARK: - Launching
 
 enum Launcher {
@@ -213,7 +313,8 @@ enum Launcher {
   static func start(paths: GamePaths, arguments: [String]) -> String? {
     let fm = FileManager.default
     guard fm.isExecutableFile(atPath: paths.executable.path) else {
-      return "The game isn't built yet: \(paths.executable.path) is missing."
+      return paths.workspace != nil ? "The game isn't built yet: click Build."
+                                    : "The game isn't built yet: \(paths.executable.path) is missing."
     }
     guard fm.fileExists(atPath: paths.gameFiles.appendingPathComponent("default.xex").path) else {
       return "The game files aren't installed yet: use Install from ISO."
@@ -247,6 +348,8 @@ enum Launcher {
 final class Installer: ObservableObject {
   enum Phase: Equatable {
     case idle, checking(String), extracting(Double), finishing
+    /// Building the game (release app): what, and how far when known.
+    case building(String, Double?)
   }
   enum UpdateStatus: Equatable {
     case unknown, checking, builtIn, installed, missing, mismatch
@@ -261,18 +364,25 @@ final class Installer: ObservableObject {
     didSet { UserDefaults.standard.set(updateLocation, forKey: "updateLocation") }
   }
 
+  /// Release app: whether the game is built from this app's payload (always true otherwise).
+  @Published private(set) var built = true
+
   let paths: GamePaths
-  private var process: Process?
   private var cancelled = false
+  /// The running check of the installed program, if any.
+  private var check: Task<Void, Never>?
 
   init(paths: GamePaths) {
     self.paths = paths
     updateLocation = UserDefaults.standard.string(forKey: "updateLocation") ?? ""
     refresh()
+    refreshBuilt()
   }
 
   var busy: Bool { phase != .idle }
-  var playable: Bool { game != nil && (update == .installed || update == .builtIn) }
+  var gameReady: Bool { game != nil && (update == .installed || update == .builtIn) }
+  var playable: Bool { gameReady && built }
+  var needsBuild: Bool { gameReady && !built }
 
   // MARK: Status
 
@@ -296,7 +406,7 @@ final class Installer: ObservableObject {
       return
     }
     update = .checking
-    Task {
+    check = Task {
       let ok = await fingerprintMatches(gameDir: paths.gameFiles)
       if ok { try? markerText().write(to: paths.verifiedMarker, atomically: true, encoding: .utf8) }
       update = ok ? (hasPatch ? .installed : .builtIn) : .mismatch
@@ -311,7 +421,7 @@ final class Installer: ObservableObject {
 
   func cancel() {
     cancelled = true
-    process?.terminate()
+    currentTool?.terminate()
   }
 
   private func fail(_ text: String) {
@@ -328,50 +438,15 @@ final class Installer: ObservableObject {
   // MARK: Tools
 
   /// Runs the extractor; progress lines go to onProgress, other output is returned.
-  private func extractor(_ args: [String], onProgress: ((Double) -> Void)? = nil) async
+  private func extractor(_ args: [String], onProgress: (@Sendable (Double) -> Void)? = nil) async
     -> (status: Int32, output: String, errors: String) {
-    await withCheckedContinuation { continuation in
-      let tool = Process()
-      tool.executableURL = paths.extractor
-      tool.arguments = args
-      tool.currentDirectoryURL = FileManager.default.temporaryDirectory
-      let out = Pipe(), err = Pipe()
-      tool.standardOutput = out
-      tool.standardError = err
-      final class Buffers: @unchecked Sendable {
-        var pending = "", output = "", errors = ""
+    await runTool(paths.extractor, args, directory: FileManager.default.temporaryDirectory) { line in
+      let parts = line.split(separator: " ")
+      guard parts.count == 3, parts[0] == "progress", let done = Double(parts[1]), let total = Double(parts[2]) else {
+        return false
       }
-      let buffers = Buffers()
-      out.fileHandleForReading.readabilityHandler = { handle in
-        guard let text = String(data: handle.availableData, encoding: .utf8), !text.isEmpty else { return }
-        buffers.pending += text
-        while let newline = buffers.pending.firstIndex(of: "\n") {
-          let line = String(buffers.pending[..<newline])
-          buffers.pending.removeSubrange(...newline)
-          let parts = line.split(separator: " ")
-          if parts.count == 3, parts[0] == "progress", let done = Double(parts[1]), let total = Double(parts[2]) {
-            if total > 0 { onProgress?(done / total) }
-          } else {
-            buffers.output += line + "\n"
-          }
-        }
-      }
-      err.fileHandleForReading.readabilityHandler = { handle in
-        buffers.errors += String(data: handle.availableData, encoding: .utf8) ?? ""
-      }
-      tool.terminationHandler = { finished in
-        out.fileHandleForReading.readabilityHandler = nil
-        err.fileHandleForReading.readabilityHandler = nil
-        let rest = String(data: out.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        continuation.resume(returning: (finished.terminationStatus, buffers.output + buffers.pending + rest,
-                                        buffers.errors))
-      }
-      do {
-        try tool.run()
-        process = tool
-      } catch {
-        continuation.resume(returning: (-1, "", error.localizedDescription))
-      }
+      if total > 0 { onProgress?(done / total) }
+      return true
     }
   }
 
@@ -472,6 +547,7 @@ final class Installer: ObservableObject {
     phase = .idle
     refresh()
     note("Title update 1 installed and checked.")
+    if needsBuild { await build() }
   }
 
   // MARK: Install from a disc image
@@ -530,7 +606,6 @@ final class Installer: ObservableObject {
         if case .extracting = self.phase { self.phase = .extracting(fraction) }
       }
     }
-    process = nil
     if cancelled {
       try? fm.removeItem(at: staging)
       phase = .idle
@@ -559,6 +634,179 @@ final class Installer: ObservableObject {
       + (updateDir != nil ? " + title update 1)." : ").")
     if hadOld { text += " The previous game files are in the Trash." }
     note(text)
+    if needsBuild { await build() }
+  }
+}
+
+// MARK: - Release app: unpacking the payload and building the game
+
+extension Installer {
+  private var buildStamp: URL { paths.gameDir.appendingPathComponent(".fable2-built") }
+
+  func refreshBuilt() {
+    guard paths.workspace != nil else { return }
+    built = (try? String(contentsOf: buildStamp, encoding: .utf8)) == paths.payloadVersion
+      && FileManager.default.isExecutableFile(atPath: paths.executable.path)
+  }
+
+  /// First start of this app version: its payload (source, SDK, CMake, Ninja,
+  /// fable2-extract) replaces the workspace's. The game files, the build folder
+  /// and the saves (~/.local/share/Fable2) are kept. Returns false on failure.
+  func unpackPayload() async -> Bool {
+    guard let workspace = paths.workspace, let version = paths.payloadVersion else { return true }
+    let fm = FileManager.default
+    let stamp = workspace.appendingPathComponent(".payload-version")
+    if (try? String(contentsOf: stamp, encoding: .utf8)) == version { return true }
+    guard let payload = Bundle.main.url(forResource: "payload", withExtension: "tar.xz") else {
+      fail("This app is incomplete (its payload is missing). Download it again.")
+      return false
+    }
+    phase = .checking("First start: unpacking the build tools…")
+    let staging = workspace.appendingPathComponent(".unpack", isDirectory: true)
+    try? fm.removeItem(at: staging)
+    do {
+      try fm.createDirectory(at: staging, withIntermediateDirectories: true)
+    } catch {
+      fail("Couldn't create \(workspace.path): \(error.localizedDescription)")
+      return false
+    }
+    let (status, _, errors) = await runTool(URL(fileURLWithPath: "/usr/bin/tar"), ["-xf", payload.path, "-C", staging.path],
+                                            directory: staging)
+    guard status == 0 else {
+      try? fm.removeItem(at: staging)
+      fail("Couldn't unpack the build tools: " + errors.prefix(200))
+      return false
+    }
+    // Tools unpacked by a downloaded app may carry its quarantine flag, which would stop them from running.
+    _ = await runTool(URL(fileURLWithPath: "/usr/bin/xattr"), ["-dr", "com.apple.quarantine", staging.path],
+                      directory: staging)
+    do {
+      for name in ["source", "sdk", "tools"] {
+        let target = workspace.appendingPathComponent(name, isDirectory: true)
+        try? fm.removeItem(at: target)
+        try fm.moveItem(at: staging.appendingPathComponent(name), to: target)
+      }
+      try fm.removeItem(at: staging)
+      try fm.createDirectory(at: paths.assetsDir, withIntermediateDirectories: true)
+      // Code generation reads assets/game/default.xex next to the manifest.
+      try fm.createSymbolicLink(atPath: workspace.appendingPathComponent("source/assets").path,
+                                withDestinationPath: "../assets")
+      try? fm.removeItem(at: buildStamp)
+      try version.write(to: stamp, atomically: true, encoding: .utf8)
+    } catch {
+      fail("Couldn't set up \(workspace.path): \(error.localizedDescription)")
+      return false
+    }
+    phase = .idle
+    refresh()  // the game files' check needs the extractor just unpacked
+    refreshBuilt()
+    return true
+  }
+
+  /// Apple's Command Line Tools (clang, the macOS SDK, git), or Xcode.
+  private func commandLineToolsInstalled() async -> Bool {
+    let xcrun = URL(fileURLWithPath: "/usr/bin/xcrun")
+    let tmp = FileManager.default.temporaryDirectory
+    let (clang, _, _) = await runTool(xcrun, ["--find", "clang"], directory: tmp)
+    let (sdk, _, _) = await runTool(xcrun, ["--show-sdk-path"], directory: tmp)
+    let (git, _, _) = await runTool(xcrun, ["--find", "git"], directory: tmp)
+    return clang == 0 && sdk == 0 && git == 0
+  }
+
+  /// Generates the game's code from the installed game files and compiles it
+  /// in the workspace. Stopping keeps what is done: the next build goes on from there.
+  func build() async {
+    guard let workspace = paths.workspace, let version = paths.payloadVersion else { return }
+    let fm = FileManager.default
+    message = nil
+    cancelled = false
+    guard await unpackPayload() else { return }
+    await check?.value
+    guard gameReady else { return fail("Install the game files (and title update 1) first.") }
+
+    phase = .checking("Checking the Command Line Tools…")
+    guard await commandLineToolsInstalled() else {
+      phase = .idle
+      _ = try? Process.run(URL(fileURLWithPath: "/usr/bin/xcode-select"), arguments: ["--install"])
+      return fail("Building the game needs Apple's Command Line Tools. Install them in the window that opened "
+                  + "(it takes a few minutes), then click Build.")
+    }
+
+    let source = workspace.appendingPathComponent("source", isDirectory: true)
+    let sdk = workspace.appendingPathComponent("sdk", isDirectory: true)
+    let tools = workspace.appendingPathComponent("tools", isDirectory: true)
+    let logURL = workspace.appendingPathComponent("build.log")
+    fm.createFile(atPath: logURL.path, contents: nil)
+    let log = try? FileHandle(forWritingTo: logURL)
+    defer { try? log?.close() }
+    var environment = ProcessInfo.processInfo.environment
+    environment["PATH"] = "/usr/bin:/bin:/usr/sbin:/sbin"
+    // The patches for thirdparty/ are applied with 'git apply', which must not find a repository above the workspace.
+    environment["GIT_CEILING_DIRECTORIES"] = workspace.deletingLastPathComponent().path
+    environment["NINJA_STATUS"] = "[%f/%t] "
+    func stopped() {
+      phase = .idle
+      note("Building stopped. Click Build to go on from where it stopped.")
+    }
+    func failed(_ step: String) {
+      fail("\(step) failed. The details are in \(logURL.path).")
+    }
+
+    // 1. The game's code, from the player's copy (generated/; done once per payload).
+    let generatedMarker = source.appendingPathComponent("generated/.fable2-generated")
+    if !fm.fileExists(atPath: generatedMarker.path) {
+      phase = .building("Generating the game's code…", nil)
+      let (status, _, _) = await runTool(sdk.appendingPathComponent("bin/rexglue"), ["codegen", "Fable2_manifest.toml"],
+                                         directory: source, environment: environment, log: log) { _ in true }
+      if cancelled { return stopped() }
+      guard status == 0 else { return failed("Generating the game's code") }
+      fm.createFile(atPath: generatedMarker.path, contents: Data(version.utf8))
+    }
+
+    // 2. Configure (once; Ninja reconfigures by itself when needed).
+    if !fm.fileExists(atPath: paths.gameDir.appendingPathComponent("build.ninja").path) {
+      phase = .building("Preparing the build…", nil)
+      let (status, _, _) = await runTool(
+        tools.appendingPathComponent("cmake/bin/cmake"),
+        ["-S", source.path, "-B", paths.gameDir.path, "-G", "Ninja",
+         "-DCMAKE_MAKE_PROGRAM=\(tools.appendingPathComponent("ninja").path)",
+         "-DCMAKE_BUILD_TYPE=Release", "-DCMAKE_C_COMPILER=clang", "-DCMAKE_CXX_COMPILER=clang++",
+         "-DCMAKE_OSX_ARCHITECTURES=arm64", "-DCMAKE_PREFIX_PATH=\(sdk.path)",
+         "-DFABLE2_NATIVE_RENDERER=ON", "-DFABLE2_LAUNCHER=OFF"],
+        directory: workspace, environment: environment, log: log) { _ in true }
+      if cancelled { return stopped() }
+      guard status == 0 else {
+        try? fm.removeItem(at: paths.gameDir.appendingPathComponent("build.ninja"))
+        return failed("Preparing the build")
+      }
+    }
+
+    // 3. Compile, with fewer jobs on Macs with less memory (the generated files are large).
+    let info = ProcessInfo.processInfo
+    let jobs = max(2, min(info.activeProcessorCount, Int(info.physicalMemory >> 30) * 2 / 3))
+    phase = .building("Compiling…", 0)
+    let (status, _, _) = await runTool(tools.appendingPathComponent("ninja"),
+                                       ["-C", paths.gameDir.path, "-j", "\(jobs)", "Fable2"],
+                                       directory: workspace, environment: environment, log: log) { line in
+      // "[done/total] what": the progress.
+      if line.hasPrefix("["), let close = line.firstIndex(of: "]") {
+        let counts = line[line.index(after: line.startIndex)..<close].split(separator: "/")
+        if counts.count == 2, let done = Double(counts[0]), let total = Double(counts[1]), total > 0 {
+          Task { @MainActor in
+            if case .building = self.phase {
+              self.phase = .building("Compiling… \(Int(done)) of \(Int(total))", done / total)
+            }
+          }
+        }
+      }
+      return true
+    }
+    if cancelled { return stopped() }
+    guard status == 0 else { return failed("Compiling") }
+    try? version.write(to: buildStamp, atomically: true, encoding: .utf8)
+    phase = .idle
+    refreshBuilt()
+    note("The game is built. Click Play.")
   }
 }
 
@@ -648,13 +896,19 @@ struct SettingsView: View {
         guard let i = args.firstIndex(of: name), i + 1 < args.count else { return nil }
         return args[i + 1]
       }
-      if let location = value("--update-location") { installer.updateLocation = location }
-      if let iso = value("--install-iso") {
-        Task { await installer.install(from: URL(fileURLWithPath: iso)) }
-      } else if value("--update-location") != nil && installer.update == .missing {
-        Task { await installer.installUpdate() }
-      } else if args.contains("--play") {
-        play()
+      // Release app: --build builds the game.
+      Task {
+        guard await installer.unpackPayload() else { return }
+        if let location = value("--update-location") { installer.updateLocation = location }
+        if let iso = value("--install-iso") {
+          await installer.install(from: URL(fileURLWithPath: iso))
+        } else if value("--update-location") != nil && installer.update == .missing {
+          await installer.installUpdate()
+        } else if args.contains("--build") {
+          await installer.build()
+        } else if args.contains("--play") {
+          play()
+        }
       }
     }
   }
@@ -683,6 +937,20 @@ struct SettingsView: View {
         Button("Choose…", action: chooseUpdateLocation)
           .disabled(installer.busy)
       }
+      if paths.workspace != nil {
+        HStack {
+          if installer.built {
+            Label("Game built on this Mac", systemImage: "hammer").foregroundStyle(.green)
+          } else {
+            Label("Game not built yet", systemImage: "hammer").foregroundStyle(.orange)
+          }
+          Spacer()
+          if !installer.built {
+            Button("Build") { Task { await installer.build() } }
+              .disabled(installer.busy || !installer.gameReady)
+          }
+        }
+      }
       Text(installer.updateLocation.isEmpty
            ? "Title update 1 isn't on the disc. Choose the folder (or file) with your title updates; the one for "
              + "your disc is picked by its media ID."
@@ -703,6 +971,21 @@ struct SettingsView: View {
         }
       case .finishing:
         ProgressView("Finishing…").progressViewStyle(.linear)
+      case .building(let what, let fraction):
+        HStack {
+          if let fraction {
+            ProgressView(value: fraction) { Text(what) }
+          } else {
+            ProgressView(what).progressViewStyle(.linear)
+          }
+          Button("Stop") { installer.cancel() }
+        }
+      }
+      if paths.workspace != nil && !installer.built {
+        Text("The game's code is generated from your copy of the game and compiled on this Mac, once: 2 to 15 "
+             + "minutes, about 1 GB. It needs Apple's Command Line Tools (offered when missing).")
+          .font(.caption).foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
       }
     }
   }
@@ -785,6 +1068,9 @@ struct SettingsView: View {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
+  func applicationWillTerminate(_ notification: Notification) {
+    if let tool = currentTool, tool.isRunning { tool.terminate() }  // a build goes on from there next time
+  }
 }
 
 @main

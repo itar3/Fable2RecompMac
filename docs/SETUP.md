@@ -1,6 +1,8 @@
 # Setting up Fable2RecompMac
 
-From nothing to a running game on an Apple Silicon Mac. Once it is built,
+From nothing to a running game on an Apple Silicon Mac, building it yourself.
+(Just want to play? The ready-made app does all of this by itself: see
+"The app" in the [README](../README.md#the-app-easiest).) Once it is built,
 day-to-day use (the launcher, options) is in [RUNNING.md](RUNNING.md).
 
 You need your own copy of Fable II for Xbox 360 (a disc image or a Games on

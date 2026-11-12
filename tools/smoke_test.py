@@ -31,7 +31,9 @@ import sys
 import time
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-BUILD = os.path.join(REPO, "out", "build", "mac-arm64-native")
+# FABLE2_BUILD / FABLE2_ASSETS: test another build (e.g. the release app's workspace).
+BUILD = os.environ.get("FABLE2_BUILD") or os.path.join(REPO, "out", "build", "mac-arm64-native")
+ASSETS = os.environ.get("FABLE2_ASSETS") or os.path.join(REPO, "assets")
 LOGS = os.path.join(BUILD, "logs")
 SAVES = os.path.expanduser("~/.local/share/Fable2/B13EBABEBABEBABE/4D5307F1")
 BIN = os.path.join(BUILD, "smoke-bin")
@@ -160,10 +162,11 @@ class Run:
         for stale in ("input_now", "diag_now", "cvar_now"):
             if os.path.exists(os.path.join(BUILD, stale)):
                 os.remove(os.path.join(BUILD, stale))
-        args = [os.path.join(BUILD, "Fable2"), os.path.join(REPO, "assets"), "--fullscreen=false",
+        args = [os.path.join(BUILD, "Fable2"), ASSETS, "--fullscreen=false",
                 "--window_width=1280", "--window_height=720",
-                "--fable2_shader_dump_dir=" + os.path.join(REPO, "shader_dump"),
                 "--eot_perf_frames=120", "--fable2_pop_counter=true"] + self.o.args
+        if not os.environ.get("FABLE2_BUILD"):  # another build runs as players run it: no capture
+            args.insert(-len(self.o.args) or len(args), "--fable2_shader_dump_dir=" + os.path.join(REPO, "shader_dump"))
         env = dict(os.environ)
         env["SDL_MAC_BACKGROUND_APP"] = "1"  # the game window doesn't take focus
         for kv in self.o.env:

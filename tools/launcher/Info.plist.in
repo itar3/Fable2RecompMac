@@ -32,5 +32,7 @@
 	<string>@FABLE2_LAUNCHER_IMAGE_LABEL@</string>
 	<key>Fable2ShaderDumpDir</key>
 	<string>@FABLE2_LAUNCHER_SHADER_DUMP_DIR@</string>
+	<key>Fable2PayloadVersion</key>
+	<string>@FABLE2_LAUNCHER_PAYLOAD_VERSION@</string>
 </dict>
 </plist>
