@@ -8,6 +8,8 @@
 	<string>Fable 2</string>
 	<key>CFBundleIdentifier</key>
 	<string>com.fable2recomp.launcher</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
 	<key>CFBundleExecutable</key>
 	<string>Fable 2</string>
 	<key>CFBundlePackageType</key>

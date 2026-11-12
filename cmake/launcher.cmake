@@ -47,10 +47,14 @@ configure_file("${CMAKE_CURRENT_SOURCE_DIR}/tools/launcher/Info.plist.in"
 add_custom_command(
     OUTPUT "${FABLE2_LAUNCHER_EXE}"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${FABLE2_LAUNCHER_APP}/Contents/MacOS"
+            "${FABLE2_LAUNCHER_APP}/Contents/Resources"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/tools/launcher/AppIcon.icns"
+            "${FABLE2_LAUNCHER_APP}/Contents/Resources/AppIcon.icns"
     COMMAND ${_fable2_swiftc} -O -parse-as-library -target arm64-apple-macos14.0
             -o "${FABLE2_LAUNCHER_EXE}" "${FABLE2_LAUNCHER_SRC}"
     COMMAND codesign --force --sign - "${FABLE2_LAUNCHER_APP}"
     DEPENDS "${FABLE2_LAUNCHER_SRC}" "${CMAKE_CURRENT_SOURCE_DIR}/tools/launcher/Info.plist.in"
+            "${CMAKE_CURRENT_SOURCE_DIR}/tools/launcher/AppIcon.icns"
     COMMENT "Building the Fable 2 launcher app"
     VERBATIM)
 add_custom_target(fable2_launcher ALL DEPENDS "${FABLE2_LAUNCHER_EXE}")

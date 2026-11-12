@@ -124,6 +124,7 @@ plutil -lint "$APP/Contents/Info.plist" >/dev/null
 DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}" xcrun --sdk macosx swiftc \
   -O -parse-as-library -target arm64-apple-macos14.0 -o "$APP/Contents/MacOS/Fable 2" tools/launcher/Fable2Launcher.swift
 mv "$OUT/payload.tar.xz" "$APP/Contents/Resources/"
+cp tools/launcher/AppIcon.icns "$APP/Contents/Resources/"
 codesign --force --deep --sign - "$APP"
 codesign --verify --deep "$APP"
 
