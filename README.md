@@ -8,6 +8,7 @@ draws its graphics through Metal (via MoltenVK) instead of emulating the Xbox
 GPU.
 
 **[Download the latest release](https://github.com/itar3/Fable2RecompMac/releases/latest)**
+· [Website](https://itar3.github.io/Fable2RecompMac/)
 (a Mac app: install your game, it builds itself, play), or build it from
 source.
 
