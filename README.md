@@ -67,6 +67,13 @@ port's working log (findings, fixes and debugging switches).
 - The first launch after a shader change stutters while Metal compiles the new
   pipelines; later launches are smooth.
 
+## Support
+
+If you'd like to support my work on this port, you can buy me a coffee on
+[Ko-fi](https://ko-fi.com/itar3). It's entirely optional: donations support
+the time spent on the port, don't unlock anything, and the port stays free.
+The game itself is never sold or included.
+
 ## Credits
 
 - [Fable2Recomp](https://github.com/Fable2Recomp/Fable2Recomp) by RyzenDew and
