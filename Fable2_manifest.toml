@@ -1,0 +1,11 @@
+# Fable2 - ReXGlue project manifest
+# Run from the repo root: rexglue codegen Fable2_manifest.toml
+
+[project]
+sdk_version = "0.10.0"
+name = "Fable2"
+
+[entrypoint]
+file_path = "assets/game/default.xex"
+out_directory_path = "generated"
+includes = ["Fable2_config.toml"]

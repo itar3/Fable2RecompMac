@@ -1,0 +1,1397 @@
+diff --git a/XenosRecomp/main.cpp b/XenosRecomp/main.cpp
+index d979f34..cabab15 100644
+--- a/XenosRecomp/main.cpp
++++ b/XenosRecomp/main.cpp
+@@ -1,3 +1,4 @@
++#include <array>
+ #include "shader.h"
+ #include "shader_recompiler.h"
+ #include "dxc_compiler.h"
+@@ -82,6 +83,8 @@ struct RecompiledShader
+     uint32_t vfetchCodeOffset = 0;
+     uint32_t usesFloatConstants = 0;
+     uint32_t interpolantMask = 0;
++    uint32_t textureFetchMask = 0;
++    uint32_t shaderFlags = 0;
+     IDxcBlob* fullDxil = nullptr;
+     std::vector<uint8_t> fullSpirv;
+     IDxcBlob* posDxil = nullptr;
+@@ -153,8 +156,11 @@ int main(int argc, char** argv)
+     if (argc >= 5 && std::string_view(argv[4]) == "--dxil")
+         dxilDump = true;
+ #endif
++    // Fable 2: --blob writes the compiled entries as one binary file the game
++    // loads at run time (shaders it meets that the built-in cache lacks).
++    const bool blobMode = argc >= 5 && std::string_view(argv[4]) == "--blob";
+ 
+-    if (std::filesystem::is_directory(input) || hlslDump || dxilDump)
++    if (std::filesystem::is_directory(input) || hlslDump || dxilDump || blobMode)
+     {
+         std::vector<std::unique_ptr<uint8_t[]>> files;
+         std::map<XXH64_hash_t, RecompiledShader> shaders;
+@@ -364,6 +370,8 @@ int main(int argc, char** argv)
+ 
+ #ifdef REEOT_RECOMP
+                 shader.interpolantMask = recompiler.interpolantMask;
++                shader.textureFetchMask = recompiler.textureFetchMask;
++                shader.shaderFlags = recompiler.shaderFlags;
+                 {
+                     struct Variant
+                     {
+@@ -466,6 +474,7 @@ int main(int argc, char** argv)
+         std::vector<uint8_t> spirv;
+ #ifdef REEOT_RECOMP
+         std::vector<uint32_t> vertexLayouts;  // flattened (w0, w1) records
++        std::vector<std::array<uint64_t, 25>> blobEntries;  // --blob: ShaderCacheEntry fields
+ #endif
+ 
+         for (auto& [hash, shader] : shaders)
+@@ -491,12 +500,17 @@ int main(int argc, char** argv)
+             append(shader.fullDxil, shader.fullSpirv, full);
+             append(shader.posDxil, shader.posSpirv, pos);
+             append(shader.velDxil, shader.velSpirv, vel);
+-            f.println("\t{{ 0x{:X}, {}, {}, {}, {}, {}, {}, {}, {}, {}, 0x{:X}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {} }},",
++            f.println("\t{{ 0x{:X}, {}, {}, {}, {}, {}, {}, {}, {}, {}, 0x{:X}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, {}, 0x{:X}, 0x{:X} }},",
+                 hash, primary[0], primary[1], primary[2], primary[3], shader.specConstantsMask,
+                 vertexLayouts.size(), shader.vertexLayout.size(), shader.vfetchCodeOffset,
+                 shader.usesFloatConstants, shader.interpolantMask,
+                 full[0], full[1], full[2], full[3], pos[0], pos[1], pos[2], pos[3],
+-                vel[0], vel[1], vel[2], vel[3]);
++                vel[0], vel[1], vel[2], vel[3], shader.textureFetchMask, shader.shaderFlags);
++            blobEntries.push_back({ hash, primary[0], primary[1], primary[2], primary[3], shader.specConstantsMask,
++                vertexLayouts.size(), shader.vertexLayout.size(), shader.vfetchCodeOffset,
++                shader.usesFloatConstants, shader.interpolantMask,
++                full[0], full[1], full[2], full[3], pos[0], pos[1], pos[2], pos[3],
++                vel[0], vel[1], vel[2], vel[3], shader.textureFetchMask, shader.shaderFlags });
+             for (const VertexFetchLayoutRecord& r : shader.vertexLayout)
+             {
+                 vertexLayouts.push_back(r.w0);
+@@ -521,6 +535,32 @@ int main(int argc, char** argv)
+         f.println("}};");
+ 
+ #ifdef REEOT_RECOMP
++        if (blobMode)
++        {
++            // 'F2SC', version 1, entry count, layout words, SPIR-V bytes; then the
++            // entries (u64 hash + 24 u32, the ShaderCacheEntry order), the layout
++            // words and the SMOL-V blobs. Offsets are into this file's arrays.
++            std::vector<uint8_t> b;
++            auto put32 = [&](uint32_t v) { b.insert(b.end(), reinterpret_cast<uint8_t*>(&v), reinterpret_cast<uint8_t*>(&v) + 4); };
++            auto put64 = [&](uint64_t v) { b.insert(b.end(), reinterpret_cast<uint8_t*>(&v), reinterpret_cast<uint8_t*>(&v) + 8); };
++            put32(0x43533246u);
++            put32(1);
++            put32(uint32_t(blobEntries.size()));
++            put32(uint32_t(vertexLayouts.size()));
++            put32(uint32_t(spirv.size()));
++            for (const auto& e : blobEntries)
++            {
++                put64(e[0]);
++                for (size_t k = 1; k < e.size(); k++)
++                    put32(uint32_t(e[k]));
++            }
++            for (uint32_t v : vertexLayouts)
++                put32(v);
++            b.insert(b.end(), spirv.begin(), spirv.end());
++            writeAllBytes(output, b.data(), b.size());
++            fmt::println("BLOB entries={} layouts={} spirv={}", blobEntries.size(), vertexLayouts.size(), spirv.size());
++            return 0;
++        }
+         f.print("const uint32_t g_shaderVertexLayouts[] = {{");
+         for (uint32_t v : vertexLayouts)
+             f.print("0x{:X},", v);
+diff --git a/XenosRecomp/shader_common.h b/XenosRecomp/shader_common.h
+index f2f670c..ab819d8 100644
+--- a/XenosRecomp/shader_common.h
++++ b/XenosRecomp/shader_common.h
+@@ -12,6 +12,11 @@
+ 
+ #ifdef REEOT_RECOMP
+     #define SPEC_CONSTANT_SINT_TEXCOORD     (1 << 2)
++    // Xenos multiplies as Direct3D 9 did: 0 * anything = 0, infinity and NaN
++    // included, in mul, mad and the dot products (Xenia does the same).
++    #define SPEC_CONSTANT_ZERO_MUL          (1 << 3)
++    // Debug: pixel shader colour outputs that are NaN or infinite turn magenta.
++    #define SPEC_CONSTANT_NAN_PAINT         (1 << 4)
+ #endif
+ 
+ #if !defined(__cplusplus) || defined(__INTELLISENSE__)
+@@ -46,6 +51,33 @@ struct PushConstants
+ #define g_LoopConstants(i)         vk::RawBufferLoad<uint4>(g_PushConstants.SharedConstants + 400 + (i)*16)
+ #define g_PosScale                 vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 912)
+ #define g_PosOffset                vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 928)
++#define g_HostBaseVertex           vk::RawBufferLoad<int>(g_PushConstants.SharedConstants + 1032)
++#define g_PixelPosScale            vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 1036)
++#define g_PointSizeScale           vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 1040)
++#define g_PointSizeConstant        vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 1044)
++#define g_IsPointDraw              vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 1048)
++#define g_TexHostScale(slot)       vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 1056 + (slot) * 4)
++#define g_TileOffsetKeep           vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 1052)
++// Fable 2: tessellated patch draws (bytes 1120/1124): segments per patch edge
++// (0 = not tessellated) and the first patch index.
++#define g_TessSegments             vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 1120)
++#define g_TessFirstPatch           vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 1124)
++// Debug readback (byte 1128): where tessellated draws store r0 and oPos of their first vertices.
++#define g_DebugAddress             vk::RawBufferLoad<uint64_t>(g_PushConstants.SharedConstants + 1128)
++#define g_VsBiasedTextures         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 1136)
++#define g_PointViewport            vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 1152)
++// Vertex pulling flags (byte 1144): 1 = 16-bit pairs in memory order (see vfetchPullHalves).
++#define g_PullFlags                vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 1144)
++// Xenos alpha to mask (byte 1140): bit 31 enables it, bits 0..7 are the
++// RB_COLORCONTROL dither offsets of the 2x2 pixel quad (2 bits each).
++#define g_AlphaToMask              vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 1140)
++// Fetches whose instruction overrides the sampler's MinFilter/MagFilter: the
++// pixel sampler's state with point (byte 1168) or linear (byte 1232) filters.
++#define SAMPLER_POINT(index, slot)  vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 1168 + (slot) * 4)
++#define SAMPLER_LINEAR(index, slot) vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 1232 + (slot) * 4)
++// Point sprite coordinate from the pixel position and the sprite's centre and
++// diameter (oPointInfo; a PointCoord input broke non-point pipelines on Metal).
++#define POINT_COORD                xePointCoord(iPos.xy, iPointInfo)
+ #else
+ #define g_Booleans                 vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 256)
+ #define g_SwappedTexcoords         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 260)
+@@ -79,6 +111,8 @@ struct PushConstants
+ 
+ #define g_Booleans(i) (g_BooleansArr[(i) / 4][(i) % 4])
+ #define g_LoopConstants(i) g_LoopConstantsArr[i]
++#define SAMPLER_POINT(index, slot)  (index)
++#define SAMPLER_LINEAR(index, slot) (index)
+ #else
+ #define DEFINE_SHARED_CONSTANTS() \
+     uint g_Booleans : packoffset(c16.x); \
+@@ -159,8 +193,19 @@ float3 linearToPWLGamma(float3 lin)
+                   linearToPWLGamma1(lin.b));
+ }
+ 
++#ifndef g_VsBiasedTextures
++#define g_VsBiasedTextures 0u
++#endif
+ float4 applyFetchSign(float4 value, uint biasedMask, uint alphaMask, uint slotIndex)
+ {
++    // The masks describe the pixel samplers 0..15 (bits slot and 16 + slot);
++    // vertex samplers 16..19 have no entry (1u << (16 + slot) would overflow).
++    if (slotIndex >= 16u)
++    {
++        if (g_VsBiasedTextures & (1u << (slotIndex - 16u)))
++            value.rgb = value.rgb * 2.0 - 1.0;
++        return value;
++    }
+     if (biasedMask & (1u << slotIndex))
+         value.rgb = value.rgb * 2.0 - 1.0;
+     if (alphaMask & (1u << (16u + slotIndex)))
+@@ -172,15 +217,41 @@ float4 applyFetchSign(float4 value, uint biasedMask, uint alphaMask, uint slotIn
+ }
+ #endif
+ 
++// Fable 2: the fetch constant's LOD bias (dword 4 bits 12..21, 1/32 steps),
++// packed by the renderer into bits 20..29 of the sampler index and applied
++// here: Metal samplers have no LOD bias (MoltenVK drops mipLodBias). The tree
++// impostor atlases build each mip from the one above with a -1 bias.
++SamplerState xeSampler(uint index)
++{
++    return g_SamplerDescriptorHeap[index & 0xFFFFFu];
++}
++
++float xeLodBias(uint index)
++{
++    return float(int(index << 2) >> 22) * (1.0 / 32.0);
++}
++
++#ifdef Sample  // vertex shaders: Sample is SampleLevel(..., 0)
++#define XE_SAMPLE(tex, index, uv) (tex).Sample(xeSampler(index), uv)
++#else
++#define XE_SAMPLE(tex, index, uv) (tex).SampleBias(xeSampler(index), uv, xeLodBias(index))
++#endif
++
+ float4 tfetch1D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float texCoord)
+ {
+-    return g_Texture1DDescriptorHeap[resourceDescriptorIndex].Sample(g_SamplerDescriptorHeap[samplerDescriptorIndex], texCoord);
++    // Fable 2: the renderer binds 2D views for every texture (a Wx1 texture for
++    // a 1D fetch); a Texture1D access to a 2D view reads zero on Metal.
++    return XE_SAMPLE(g_Texture2DDescriptorHeap[resourceDescriptorIndex], samplerDescriptorIndex, float2(texCoord, 0.5));
+ }
+ 
+ float4 tfetch2D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset)
+ {
+     Texture2D<float4> texture = g_Texture2DDescriptorHeap[resourceDescriptorIndex];
+-    return texture.Sample(g_SamplerDescriptorHeap[samplerDescriptorIndex], texCoord + offset / getTexture2DDimensions(texture));
++    // Fable 2: nearly every call passes a constant zero offset; the size query
++    // and division (0 / size cannot be folded) cost a texture query per fetch.
++    if (any(offset != 0.0))
++        texCoord += offset / getTexture2DDimensions(texture);
++    return XE_SAMPLE(texture, samplerDescriptorIndex, texCoord);
+ }
+ 
+ float2 getWeights2D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset)
+@@ -189,6 +260,31 @@ float2 getWeights2D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, f
+     return select(isnan(texCoord), 0.0, frac(texCoord * getTexture2DDimensions(texture) + offset - 0.5));
+ }
+ 
++// Fable 2: render targets are mirrored at the render scale, but fetch
++// instruction offsets count guest texels (the bloom / sun ray blurs' 13 taps,
++// -5.5..6.5 texels of a 280x180 buffer). Divided by the host size they covered
++// half the kernel and skipped every other texel: blocky, stair-stepped glows.
++// Pixel samplers 0..15 only (g_TexHostScale has no vertex sampler entries).
++float2 guestTexelSize(Texture2D<float4> texture, uint slot)
++{
++    // g_PackedDec3 bit 28: debug switch back to host texels (fable2_offsets_guest_texels=false).
++    float hostScale = (g_PackedDec3 & 0x10000000u) ? 1.0 : g_TexHostScale(slot);
++    return (hostScale > 0.0 ? hostScale : 1.0) / float2(getTexture2DDimensions(texture));
++}
++
++float4 tfetch2DOffset(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset, uint slot)
++{
++    Texture2D<float4> texture = g_Texture2DDescriptorHeap[resourceDescriptorIndex];
++    return XE_SAMPLE(texture, samplerDescriptorIndex, texCoord + offset * guestTexelSize(texture, slot));
++}
++
++// The weights of the guest's bilinear footprint, matching tfetch2DOffset's taps.
++float2 getWeights2DGuest(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset, uint slot)
++{
++    Texture2D<float4> texture = g_Texture2DDescriptorHeap[resourceDescriptorIndex];
++    return select(isnan(texCoord), 0.0, frac(texCoord / guestTexelSize(texture, slot) + offset - 0.5));
++}
++
+ float w0(float a)
+ {
+     return (1.0f / 6.0f) * (a * (a * (-a + 3.0f) - 3.0f) + 1.0f);
+@@ -229,10 +325,21 @@ float h1(float a)
+     return 1.0f + w3(a) / (w2(a) + w3(a)) + 0.5f;
+ }
+ 
++// Fable 2: unnormalized (texel) coordinates. On the host both the pixel
++// positions they are usually derived from and the textures are scaled alike.
++float4 tfetch2DDenorm(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset, uint slot)
++{
++    Texture2D<float4> texture = g_Texture2DDescriptorHeap[resourceDescriptorIndex];
++    // Texel coordinates are in guest texels; render targets are mirrored at
++    // the render scale.
++    float hostScale = g_TexHostScale(slot);
++    float2 guestSize = float2(getTexture2DDimensions(texture)) / (hostScale > 0.0 ? hostScale : 1.0);
++    return XE_SAMPLE(texture, samplerDescriptorIndex, (texCoord + offset) / guestSize);
++}
++
+ float4 tfetch2DBicubic(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset)
+ {
+     Texture2D<float4> texture = g_Texture2DDescriptorHeap[resourceDescriptorIndex];
+-    SamplerState samplerState = g_SamplerDescriptorHeap[samplerDescriptorIndex];
+     uint2 dimensions = getTexture2DDimensions(texture);
+     
+     float x = texCoord.x * dimensions.x + offset.x;
+@@ -253,17 +360,17 @@ float4 tfetch2DBicubic(uint resourceDescriptorIndex, uint samplerDescriptorIndex
+     float h1y = h1(fy);
+ 
+     float4 r =
+-        g0(fy) * (g0x * texture.Sample(samplerState, float2(px + h0x, py + h0y) / float2(dimensions)) +
+-            g1x * texture.Sample(samplerState, float2(px + h1x, py + h0y) / float2(dimensions))) +
+-        g1(fy) * (g0x * texture.Sample(samplerState, float2(px + h0x, py + h1y) / float2(dimensions)) +
+-            g1x * texture.Sample(samplerState, float2(px + h1x, py + h1y) / float2(dimensions)));
++        g0(fy) * (g0x * XE_SAMPLE(texture, samplerDescriptorIndex, float2(px + h0x, py + h0y) / float2(dimensions)) +
++            g1x * XE_SAMPLE(texture, samplerDescriptorIndex, float2(px + h1x, py + h0y) / float2(dimensions))) +
++        g1(fy) * (g0x * XE_SAMPLE(texture, samplerDescriptorIndex, float2(px + h0x, py + h1y) / float2(dimensions)) +
++            g1x * XE_SAMPLE(texture, samplerDescriptorIndex, float2(px + h1x, py + h1y) / float2(dimensions)));
+ 
+     return r;
+ }
+ 
+ float4 tfetch3D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float3 texCoord)
+ {
+-    return g_Texture3DDescriptorHeap[resourceDescriptorIndex].Sample(g_SamplerDescriptorHeap[samplerDescriptorIndex], texCoord);
++    return XE_SAMPLE(g_Texture3DDescriptorHeap[resourceDescriptorIndex], samplerDescriptorIndex, texCoord);
+ }
+ 
+ struct CubeMapData
+@@ -274,7 +381,7 @@ struct CubeMapData
+ 
+ float4 tfetchCube(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float3 texCoord, inout CubeMapData cubeMapData)
+ {
+-    return g_TextureCubeDescriptorHeap[resourceDescriptorIndex].Sample(g_SamplerDescriptorHeap[samplerDescriptorIndex], cubeMapData.cubeMapDirections[texCoord.z]);
++    return XE_SAMPLE(g_TextureCubeDescriptorHeap[resourceDescriptorIndex], samplerDescriptorIndex, cubeMapData.cubeMapDirections[texCoord.z]);
+ }
+ 
+ #ifdef REEOT_RECOMP
+@@ -381,11 +488,38 @@ void eotTwoProduct(float a, float b, out float p, out float e)
+     e = err;
+ }
+ 
+-float dotF(float4 a, float4 b) { return dot(a, b); }
+-float dotF(float3 a, float3 b) { return dot(a, b); }
++// Xenos's multiplication (SPEC_CONSTANT_ZERO_MUL): a product with a zero
++// factor is zero. Zeroing both factors of such products leaves the rest as is.
++#define ZERO_MUL_ON ((g_SpecConstants() & SPEC_CONSTANT_ZERO_MUL) != 0)
++void zeroPair(inout float a, inout float b)
++{
++    if (ZERO_MUL_ON && (a == 0.0 || b == 0.0)) { a = 0.0; b = 0.0; }
++}
++#define ZERO_PAIR_VECTOR(T, B) \
++void zeroPair(inout T a, inout T b) \
++{ \
++    if (ZERO_MUL_ON) { B z = or(a == 0.0, b == 0.0); a = select(z, 0.0, a); b = select(z, 0.0, b); } \
++}
++ZERO_PAIR_VECTOR(float2, bool2)
++ZERO_PAIR_VECTOR(float3, bool3)
++ZERO_PAIR_VECTOR(float4, bool4)
++#define ZERO_MUL_FUNCTIONS(T) \
++T mulZ(T a, T b) { zeroPair(a, b); return a * b; } \
++T madZ(T a, T b, T c) { zeroPair(a, b); return a * b + c; }
++ZERO_MUL_FUNCTIONS(float)
++ZERO_MUL_FUNCTIONS(float2)
++ZERO_MUL_FUNCTIONS(float3)
++ZERO_MUL_FUNCTIONS(float4)
++float dotZ(float4 a, float4 b) { zeroPair(a, b); return dot(a, b); }
++float dotZ(float3 a, float3 b) { zeroPair(a, b); return dot(a, b); }
++float dotZ(float2 a, float2 b) { zeroPair(a, b); return dot(a, b); }
++
++float dotF(float4 a, float4 b) { return dotZ(a, b); }
++float dotF(float3 a, float3 b) { return dotZ(a, b); }
+ 
+ float dotP(float4 a, float4 b)
+ {
++    zeroPair(a, b);
+     float p, s, h, r, q;
+     eotTwoProduct(a.x, b.x, p, s);
+     eotTwoProduct(a.y, b.y, h, r);
+@@ -403,6 +537,7 @@ float dotP(float4 a, float4 b)
+ 
+ float dotP(float3 a, float3 b)
+ {
++    zeroPair(a, b);
+     float p, s, h, r, q;
+     eotTwoProduct(a.x, b.x, p, s);
+     eotTwoProduct(a.y, b.y, h, r);
+@@ -428,6 +563,250 @@ float computeMipLevel(float2 pixelCoord)
+     return max(0.0, 0.5 * log2(deltaMaxSqr));
+ }
+ 
++#if !defined(__spirv__) && defined(REEOT_RECOMP)
++#define g_HostBaseVertex 0
++#define g_TessSegments 0u
++#define g_TessFirstPatch 0u
++#define xeDebugVertex(id, pos, size)
++#define g_PixelPosScale 1.0
++#define g_AlphaToMask 0u
++#define g_IsPointDraw 0
++#define g_TexHostScale(slot) 1.0
++#define g_TileOffsetKeep 1.0
++#define POINT_COORD float2(0.0, 0.0)
++int vfetchPullElement(float index, bool rounded, uint strideDwords) { return 0; }
++float4 vfetchPull(uint slot, int element, uint format, uint flags, float scale) { return 0.0; }
++uint vfetchSiteSlot(uint site, uint baked) { return baked; }
++uint vfetchSiteStride(uint site, uint baked) { return baked; }
++int vfetchSiteOffset(uint site, int baked) { return baked; }
++uint vfetchSiteFormat(uint site, uint baked) { return baked; }
++uint vfetchSiteFlags(uint site, uint baked) { return baked; }
++float vfetchSiteScale(uint site, float baked) { return baked; }
++#endif
++
++#if defined(__spirv__) && defined(REEOT_RECOMP)
++float2 xePointCoord(float2 pixel, float4 info)
++{
++    float4 vp = g_PointViewport;
++    // The rasteriser's y runs opposite to the exported NDC y (round sprites
++    // only along the screen's middle row otherwise).
++    float2 centre = vp.xy + float2(info.x * 0.5 + 0.5, 0.5 - info.y * 0.5) * vp.zw;
++    return saturate((pixel - centre) / max(info.z, 1.0) + 0.5);
++}
++#endif
++
++#ifdef REEOT_RECOMP
++// Xenos starts vertex shaders with the vertex index in r0.x. For a tessellated
++// patch draw (Fable 2's landscape) r0 is (patch index, u, v) instead; the
++// renderer draws each patch as a grid of (segments + 1)^2 vertices.
++float4 xeVertexRegister(uint vertexId)
++{
++    int id = int(vertexId) - g_HostBaseVertex;
++    uint segments = g_TessSegments;
++    if (segments == 0u)
++        return float4(float(id), 0.0, 0.0, 0.0);
++    uint row = segments + 1u;
++    uint local = uint(id) % (row * row);
++    return float4(float(uint(id) / (row * row) + g_TessFirstPatch), float(local % row) / float(segments),
++                  float(local / row) / float(segments), 0.0);
++}
++#if defined(__spirv__)
++void xeDebugVertex(uint vertexId, float4 pos, float size)
++{
++    uint64_t address = g_DebugAddress;
++    int id = int(vertexId) - g_HostBaseVertex;
++    if (address == 0 || id < 0 || (id & 255) != 0 || id >= 16 * 256)
++        return;
++    float4 reg = xeVertexRegister(vertexId);
++    id >>= 8;
++    reg.w = size;
++    vk::RawBufferStore<float4>(address + uint64_t(id) * 32, reg);
++    vk::RawBufferStore<float4>(address + uint64_t(id) * 32 + 16, pos);
++}
++#endif
++#endif
++
++#if defined(__spirv__) && defined(REEOT_RECOMP)
++
++// Vertex pulling: vfetch indexed by a register other than the vertex index.
++// The renderer uploads the fetch constant's memory (raw guest bytes) and puts a
++// table at SharedConstants + 1024: 96 entries of { uint64 address, uint size in
++// dwords, uint endian } per fetch slot, address 0 if not uploaded.
++#define g_VertexPullTable vk::RawBufferLoad<uint64_t>(g_PushConstants.SharedConstants + 1024)
++
++// Pull sites (entry 96 + site of the vertex pull table): { slot | valid bit
++// 31, stride in dwords, offset in dwords, format | flags << 8 | exp_adjust << 16 },
++// the binding D3D put into the live microcode; unset entries keep the
++// recompiled (unbound) values.
++uint4 vfetchSite(uint site)
++{
++    uint64_t table = g_VertexPullTable;
++    if (table == 0)
++        return uint4(0, 0, 0, 0);
++    return vk::RawBufferLoad<uint4>(table + uint64_t(96 + site) * 16);
++}
++uint vfetchSiteSlot(uint site, uint baked) { uint4 e = vfetchSite(site); return (e.x & 0x80000000u) != 0 ? (e.x & 0x7Fu) : baked; }
++uint vfetchSiteStride(uint site, uint baked) { uint4 e = vfetchSite(site); return (e.x & 0x80000000u) != 0 ? e.y : baked; }
++int vfetchSiteOffset(uint site, int baked) { uint4 e = vfetchSite(site); return (e.x & 0x80000000u) != 0 ? int(e.z) : baked; }
++uint vfetchSiteFormat(uint site, uint baked) { uint4 e = vfetchSite(site); return (e.x & 0x80000000u) != 0 ? (e.w & 0xFFu) : baked; }
++uint vfetchSiteFlags(uint site, uint baked) { uint4 e = vfetchSite(site); return (e.x & 0x80000000u) != 0 ? ((e.w >> 8) & 0xFFu) : baked; }
++float vfetchSiteScale(uint site, float baked)
++{
++    uint4 e = vfetchSite(site);
++    return (e.x & 0x80000000u) != 0 ? ldexp(1.0, float(int(e.w << 8) >> 24)) : baked;
++}
++
++int vfetchPullElement(float index, bool rounded, uint strideDwords)
++{
++    if (strideDwords == 0)
++        return 0;
++    return int(floor(rounded ? index + 0.5 : index)) * int(strideDwords);
++}
++
++uint vfetchPullEndian(uint slot)
++{
++    uint64_t table = g_VertexPullTable;
++    // Bit 4: the host already swapped the words (the endian mode stays for the
++    // 16-bit half order below).
++    return table == 0 ? 0u : (vk::RawBufferLoad<uint2>(table + uint64_t(slot) * 16 + 8).y & 0xFu);
++}
++
++// A word's two 16-bit values, the one first in memory as x: after an 8-in-32
++// swap it is the high half (as the host input path's swapped 16-bit inputs),
++// after an 8-in-16 swap the low half.
++uint2 vfetchPullHalves(uint w, uint slot)
++{
++    const bool highFirst = (g_PullFlags & 1u) != 0 && vfetchPullEndian(slot) == 2;
++    return highFirst ? uint2(w >> 16, w & 0xFFFF) : uint2(w & 0xFFFF, w >> 16);
++}
++
++uint vfetchPullWord(uint slot, int dword)
++{
++    uint64_t table = g_VertexPullTable;
++    if (table == 0)
++        return 0;
++    uint64_t entry = table + uint64_t(slot) * 16;
++    uint64_t base = vk::RawBufferLoad<uint64_t>(entry);
++    uint2 info = vk::RawBufferLoad<uint2>(entry + 8);
++    if (base == 0 || dword < 0 || uint(dword) >= info.x)
++        return 0;
++    uint v = vk::RawBufferLoad<uint>(base + uint64_t(dword) * 4);
++    // Xenos endian modes: 1 8-in-16, 2 8-in-32, 3 16-in-32. Bit 4: already
++    // swapped by the host when it copied the buffer.
++    if (info.y == 1 || info.y == 2)
++        v = ((v & 0x00FF00FFu) << 8) | ((v >> 8) & 0x00FF00FFu);
++    if (info.y == 2 || info.y == 3)
++        v = (v << 16) | (v >> 16);
++    return v;
++}
++
++float vfetchPullPacked(uint raw, uint width, uint flags)
++{
++    // flags: 1 signed, 2 integer (unnormalized), 4 signed repeating fraction mode "no zero".
++    const bool isSigned = (flags & 1) != 0, isInteger = (flags & 2) != 0, noZero = (flags & 4) != 0;
++    const float range = float((1u << width) - 1u);
++    if (isSigned)
++    {
++        float v = float(int(raw << (32 - width)) >> (32 - width));
++        if (isInteger)
++            return v;
++        if (noZero)
++            return v * (2.0 / range) + 1.0 / range;
++        if (width <= 2)
++            return max(v, -1.0);
++        return max(v / float((1u << (width - 1)) - 1u), -1.0);
++    }
++    float v = float(raw);
++    return isInteger || width <= 1 ? v : v / range;
++}
++
++float vfetchPull32(uint raw, uint flags)
++{
++    const bool isSigned = (flags & 1) != 0, isInteger = (flags & 2) != 0, noZero = (flags & 4) != 0;
++    if (isSigned)
++    {
++        float v = float(int(raw));
++        if (isInteger)
++            return v;
++        return noZero ? v * (1.0 / 2147483647.5) + 0.5 / 2147483647.5 : v * (1.0 / 2147483647.0);
++    }
++    return isInteger ? float(raw) : float(raw) * (1.0 / 4294967295.0);
++}
++
++float4 vfetchPull(uint slot, int element, uint format, uint flags, float scale)
++{
++    float4 r = 0.0;
++    uint w0 = vfetchPullWord(slot, element);
++    switch (format)
++    {
++    case 6: // k_8_8_8_8
++        r = float4(vfetchPullPacked(w0 & 0xFF, 8, flags), vfetchPullPacked((w0 >> 8) & 0xFF, 8, flags),
++                   vfetchPullPacked((w0 >> 16) & 0xFF, 8, flags), vfetchPullPacked(w0 >> 24, 8, flags));
++        break;
++    case 7: // k_2_10_10_10
++        r = float4(vfetchPullPacked(w0 & 0x3FF, 10, flags), vfetchPullPacked((w0 >> 10) & 0x3FF, 10, flags),
++                   vfetchPullPacked((w0 >> 20) & 0x3FF, 10, flags), vfetchPullPacked(w0 >> 30, 2, flags));
++        break;
++    case 16: // k_10_11_11
++        r.xyz = float3(vfetchPullPacked(w0 & 0x7FF, 11, flags), vfetchPullPacked((w0 >> 11) & 0x7FF, 11, flags),
++                       vfetchPullPacked(w0 >> 22, 10, flags));
++        break;
++    case 17: // k_11_11_10
++        r.xyz = float3(vfetchPullPacked(w0 & 0x3FF, 10, flags), vfetchPullPacked((w0 >> 10) & 0x7FF, 11, flags),
++                       vfetchPullPacked(w0 >> 21, 11, flags));
++        break;
++    case 25: // k_16_16
++    {
++        uint2 h0 = vfetchPullHalves(w0, slot);
++        r.xy = float2(vfetchPullPacked(h0.x, 16, flags), vfetchPullPacked(h0.y, 16, flags));
++        break;
++    }
++    case 26: // k_16_16_16_16
++    {
++        uint2 h0 = vfetchPullHalves(w0, slot), h1 = vfetchPullHalves(vfetchPullWord(slot, element + 1), slot);
++        r = float4(vfetchPullPacked(h0.x, 16, flags), vfetchPullPacked(h0.y, 16, flags),
++                   vfetchPullPacked(h1.x, 16, flags), vfetchPullPacked(h1.y, 16, flags));
++        break;
++    }
++    case 31: // k_16_16_FLOAT
++        r.xy = f16tof32(vfetchPullHalves(w0, slot));
++        break;
++    case 32: // k_16_16_16_16_FLOAT
++    {
++        uint2 h0 = vfetchPullHalves(w0, slot), h1 = vfetchPullHalves(vfetchPullWord(slot, element + 1), slot);
++        r = f16tof32(uint4(h0, h1));
++        break;
++    }
++    case 33: // k_32
++        r.x = vfetchPull32(w0, flags);
++        break;
++    case 34: // k_32_32
++        r.xy = float2(vfetchPull32(w0, flags), vfetchPull32(vfetchPullWord(slot, element + 1), flags));
++        break;
++    case 35: // k_32_32_32_32
++        r = float4(vfetchPull32(w0, flags), vfetchPull32(vfetchPullWord(slot, element + 1), flags),
++                   vfetchPull32(vfetchPullWord(slot, element + 2), flags),
++                   vfetchPull32(vfetchPullWord(slot, element + 3), flags));
++        break;
++    case 36: // k_32_FLOAT
++        r.x = asfloat(w0);
++        break;
++    case 37: // k_32_32_FLOAT
++        r.xy = asfloat(uint2(w0, vfetchPullWord(slot, element + 1)));
++        break;
++    case 57: // k_32_32_32_FLOAT
++        r.xyz = asfloat(uint3(w0, vfetchPullWord(slot, element + 1), vfetchPullWord(slot, element + 2)));
++        break;
++    case 38: // k_32_32_32_32_FLOAT
++        r = asfloat(uint4(w0, vfetchPullWord(slot, element + 1), vfetchPullWord(slot, element + 2),
++                          vfetchPullWord(slot, element + 3)));
++        break;
++    }
++    return r * scale;
++}
++
++#endif
++
+ #endif
+ 
+ #endif
+diff --git a/XenosRecomp/shader_recompiler.cpp b/XenosRecomp/shader_recompiler.cpp
+index a664536..7f8169f 100644
+--- a/XenosRecomp/shader_recompiler.cpp
++++ b/XenosRecomp/shader_recompiler.cpp
+@@ -1,3 +1,6 @@
++#include <cmath>
++#include <cstring>
++#include <set>
+ #include "shader_recompiler.h"
+ #include "shader_common.h"
+ 
+@@ -17,7 +20,13 @@ static constexpr const char* USAGE_TYPES[] =
+ {
+     "float4", // POSITION
+     "float4", // BLENDWEIGHT
++#ifdef REEOT_RECOMP
++    // Fable 2 gives blend indices as half floats as well as bytes; a float
++    // input takes both (bytes through SCALED formats).
++    "float4", // BLENDINDICES
++#else
+     "uint4", // BLENDINDICES
++#endif
+ #ifdef REEOT_RECOMP
+     "float4", // NORMAL
+ #else
+@@ -137,6 +146,23 @@ static constexpr std::string_view TEXTURE_DIMENSIONS[] =
+     "1D"
+ };
+ 
++// Shared constant offsets of the texture and sampler descriptor indices.
++// Samplers 0..15 use the original layout; vertex texture samplers 16..19
++// (Fable 2) are appended after the 944-byte shared constant block.
++static uint32_t textureDescriptorOffset(size_t dimension, uint32_t reg)
++{
++    if (reg >= 16)
++        return 944 + uint32_t(dimension) * 16 + (reg - 16) * 4;
++    return uint32_t(dimension) * 64 + reg * 4;
++}
++
++static uint32_t samplerDescriptorOffset(uint32_t reg)
++{
++    if (reg >= 16)
++        return 944 + 64 + (reg - 16) * 4;
++    return 4 * 64 + reg * 4;
++}
++
+ static FetchDestinationSwizzle getDestSwizzle(uint32_t dstSwizzle, uint32_t index)
+ {
+     return FetchDestinationSwizzle((dstSwizzle >> (index * 3)) & 0x7);
+@@ -182,6 +208,34 @@ void ShaderRecompiler::recompile(const VertexFetchInstruction& instr, uint32_t a
+         ++indentation;
+     }
+ 
++#ifdef REEOT_RECOMP
++    // Fetches indexed by anything but the vertex index (r0) read memory
++    // directly (vertex pulling); vfetch_mini follows its vfetch_full.
++    // r0 holds the vertex index on entry; once the shader has written r0 (e.g.
++    // r0.x += g_LightmapIndexOffset) an r0-indexed fetch is no longer the
++    // plain per-vertex input either.
++    auto r0Written = [&]
++    {
++        for (size_t pos = out.find("r0."); pos != std::string::npos; pos = out.find("r0.", pos + 3))
++        {
++            if (pos == 0 || (out[pos - 1] != '\t' && out[pos - 1] != ' '))
++                continue;
++            size_t q = pos + 3;
++            while (q < out.size() && (out[q] == 'x' || out[q] == 'y' || out[q] == 'z' || out[q] == 'w'))
++                ++q;
++            if (q > pos + 3 && out.compare(q, 3, " = ") == 0)
++                return true;
++        }
++        return false;
++    };
++    const bool pulled = instr.isMiniFetch ? lastFullVfetchPulled : (instr.srcRegister != 0 || r0Written());
++    if (!instr.isMiniFetch)
++        lastFullVfetchPulled = pulled;
++    if (pulled)
++        recompilePulled(instr, address);
++    else
++#endif
++    {
+     indent();
+     print("r{}.", instr.dstRegister);
+     printDstSwizzle(instr.dstSwizzle, false);
+@@ -300,6 +354,7 @@ void ShaderRecompiler::recompile(const VertexFetchInstruction& instr, uint32_t a
+     out += ";\n";
+ 
+     printDstSwizzle01(instr.dstRegister, instr.dstSwizzle);
++    }
+ 
+     if (instr.isPredicated)
+     {
+@@ -309,6 +364,73 @@ void ShaderRecompiler::recompile(const VertexFetchInstruction& instr, uint32_t a
+     }
+ }
+ 
++#ifdef REEOT_RECOMP
++void ShaderRecompiler::recompilePulled(const VertexFetchInstruction& instr, uint32_t address)
++{
++    const uint32_t slot = instr.constIndex * 3 + instr.constIndexSelect;
++    // Pull sites: D3D binds the vfetch format, stride, offset and fetch
++    // constant into a copy of the microcode per vertex declaration, so a
++    // shader recompiled from unbound microcode has none of them (format 0).
++    // Each pulled fetch reads them per draw from the vertex pull table (entry
++    // 96 + site), which the renderer fills from the live microcode or the
++    // bound declaration; the values below are the fallback.
++    const uint32_t parent = instr.isMiniFetch ? lastFullVfetchAddress : address;
++    if (!instr.isMiniFetch)
++        lastFullVfetchAddress = address;
++    const uint32_t site = pullSiteCount < 16 ? pullSiteCount++ : 0xFFu;
++    if (site != 0xFFu)
++    {
++        uint32_t usageKey = 0xFFu;
++        auto ve = vertexElements.find(address);
++        if (ve != vertexElements.end())
++            usageKey = uint32_t(ve->second.usage) | (uint32_t(ve->second.usageIndex) << 4);
++        VertexFetchLayoutRecord rec;
++        rec.w0 = 0x400u | (site << 16) | (usageKey & 0xFFu);
++        rec.w1 = (address & 0xFFFFu) | ((parent & 0xFFFFu) << 16);
++        vertexLayout.push_back(rec);
++    }
++
++    if (!instr.isMiniFetch)
++    {
++        const uint32_t w0 = 0x200u | (slot << 16);
++        bool seen = false;
++        for (const VertexFetchLayoutRecord& r : vertexLayout)
++            seen |= r.w0 == w0;
++        if (!seen)
++            vertexLayout.push_back({ w0, 0 });
++
++        indent();
++        if (site != 0xFFu)
++            println("vpElement = vfetchPullElement(r{}.{}, {}, vfetchSiteStride({}u, {}u));", instr.srcRegister,
++                SWIZZLES[instr.srcSwizzle], instr.isIndexRounded ? "true" : "false", site, instr.stride);
++        else
++            println("vpElement = vfetchPullElement(r{}.{}, {}, {}u);", instr.srcRegister,
++                SWIZZLES[instr.srcSwizzle], instr.isIndexRounded ? "true" : "false", instr.stride);
++    }
++
++    const uint32_t flags = uint32_t(instr.formatCompAll) | (uint32_t(instr.numFormatAll) << 1) |
++        (uint32_t(instr.signedRfModeAll) << 2);
++    const float scale = std::ldexp(1.0f, instr.expAdjust);
++    uint32_t scaleBits;
++    memcpy(&scaleBits, &scale, sizeof(scaleBits));
++
++    indent();
++    print("r{}.", instr.dstRegister);
++    printDstSwizzle(instr.dstSwizzle, false);
++    if (site != 0xFFu)
++        print(" = vfetchPull(vfetchSiteSlot({0}u, {1}u), vpElement + vfetchSiteOffset({0}u, {2}), vfetchSiteFormat({0}u, {3}u), "
++              "vfetchSiteFlags({0}u, {4}u), vfetchSiteScale({0}u, asfloat(0x{5:X}u))).",
++            site, slot, int32_t(instr.offset), uint32_t(instr.format), flags, scaleBits);
++    else
++        print(" = vfetchPull({}u, vpElement + ({}), {}u, {}u, asfloat(0x{:X}u)).", slot, int32_t(instr.offset),
++            uint32_t(instr.format), flags, scaleBits);
++    printDstSwizzle(instr.dstSwizzle, true);
++    out += ";\n";
++
++    printDstSwizzle01(instr.dstRegister, instr.dstSwizzle);
++}
++#endif
++
+ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicubic)
+ {
+     if (instr.opcode != FetchOpcode::TextureFetch && instr.opcode != FetchOpcode::GetTextureWeights)
+@@ -416,11 +538,48 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
+ 
+     out += dimension;
+ 
++    // Fable 2: fetches with unnormalized (texel) coordinates.
++    const bool denorm2D = instr.opcode == FetchOpcode::TextureFetch && instr.texCoordDenorm &&
++        instr.dimension == TextureDimension::Texture2D;
++    if (denorm2D)
++        out += "Denorm";
++#ifdef REEOT_RECOMP
++    // Fable 2: pixel shader offsets and weights in guest texels (render
++    // targets are mirrored at the render scale; see tfetch2DOffset).
++    const bool guestTexels2D = isPixelShader && !denorm2D && instr.constIndex < 16 &&
++        instr.dimension == TextureDimension::Texture2D &&
++        (instr.opcode == FetchOpcode::GetTextureWeights || instr.offsetX != 0 || instr.offsetY != 0);
++    if (guestTexels2D)
++        out += instr.opcode == FetchOpcode::GetTextureWeights ? "Guest" : "Offset";
++#else
++    const bool guestTexels2D = false;
++#endif
++
+ #ifdef UNLEASHED_RECOMP
+     if (bicubic)
+         out += "Bicubic";
+ #endif
+ 
++    if (instr.opcode == FetchOpcode::TextureFetch && instr.constIndex < 32)
++        textureFetchMask |= 1u << instr.constIndex;
++#ifdef REEOT_RECOMP
++    // Fable 2: MinFilter/MagFilter set in the fetch instruction replace the
++    // sampler's (the bloom downsample's bilinear taps on a point-filtered scene
++    // copy, point reads of the bilinear-filtered scene depth).
++    const char* samplerOverride = nullptr;
++    if (isPixelShader && instr.opcode == FetchOpcode::TextureFetch && instr.constIndex < 16 &&
++        instr.magFilter == instr.minFilter)
++    {
++        if (instr.magFilter == 0)
++            samplerOverride = "SAMPLER_POINT";
++        else if (instr.magFilter == 1)
++            samplerOverride = "SAMPLER_LINEAR";
++    }
++    if (samplerOverride != nullptr)
++        print("({0}_Texture{1}DescriptorIndex, {2}({0}_SamplerDescriptorIndex, {3}), ", constNamePtr, dimension,
++            samplerOverride, uint32_t(instr.constIndex));
++    else
++#endif
+     print("({0}_Texture{1}DescriptorIndex, {0}_SamplerDescriptorIndex, ", constNamePtr, dimension);
+     printSrcRegister(componentCount);
+ 
+@@ -428,6 +587,8 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
+     {
+     case TextureDimension::Texture2D:
+         print(", float2({}, {})", instr.offsetX * 0.5f, instr.offsetY * 0.5f);
++        if (denorm2D || guestTexels2D)
++            print(", {}u", instr.constIndex);
+         break;
+     case TextureDimension::TextureCube:
+         out += ", cubeMapData";
+@@ -494,6 +655,9 @@ static uint64_t vectorSourceTemps(const AluInstruction& instr)
+ 
+ void ShaderRecompiler::recompile(const AluInstruction& instr)
+ {
++#ifdef REEOT_RECOMP
++    specConstantsMask |= SPEC_CONSTANT_ZERO_MUL;
++#endif
+ #ifdef REEOT_RECOMP
+     VertexAluWrite vertexWrite{};
+     vertexWrite.dotOffset = SIZE_MAX;
+@@ -725,6 +889,9 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
+             return result;
+         };
+ 
++    if (instr.vectorOpcode >= AluVectorOpcode::KillEq && instr.vectorOpcode <= AluVectorOpcode::KillNe)
++        shaderFlags |= 1;
++
+     switch (instr.vectorOpcode)
+     {
+     case AluVectorOpcode::KillEq:
+@@ -770,6 +937,7 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
+                 exportRegister = "oC3";
+                 break;           
+             case ExportRegister::PSDepth:
++                shaderFlags |= 1;
+                 exportRegister = "oDepth";
+                 break;
+             }
+@@ -803,8 +971,27 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
+             default:
+             {
+                 auto findResult = interpolators.find(instr.vectorDest);
+-                assert(findResult != interpolators.end());
+-                exportRegister = findResult->second;
++                if (findResult == interpolators.end())
++                {
++                    // Fable 2: point size / edge flag / kill (63) and memory
++                    // export (eA 32, eM0..eM4 33..37) aren't implemented yet;
++                    // write them to an unused local so the shader compiles.
++                    const uint32_t reg = uint32_t(instr.vectorDest);
++                    if (reg >= 32 && reg <= 37)
++                        fmt::println(stderr, "NOTE vertex shader uses memory export (needs memexport support)");
++                    exportRegister = "oUnusedExport";
++                #ifdef REEOT_RECOMP
++                    if (reg == uint32_t(ExportRegister::VSPointSizeEdgeFlagKillVertex))
++                    {
++                        exportRegister = "oPointSizeExport";
++                        pointSizeExported = true;
++                    }
++                #endif
++                }
++                else
++                {
++                    exportRegister = findResult->second;
++                }
+                 break;
+             }
+             }
+@@ -881,7 +1068,11 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
+             break;
+ 
+         case AluVectorOpcode::Mul:
++#ifdef REEOT_RECOMP
++            print("mulZ({}, {})", op(VECTOR_0), op(VECTOR_1));
++#else
+             print("{} * {}", op(VECTOR_0), op(VECTOR_1));
++#endif
+             break;
+ 
+         case AluVectorOpcode::Max:
+@@ -922,7 +1113,11 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
+             break;
+ 
+         case AluVectorOpcode::Mad:
++#ifdef REEOT_RECOMP
++            print("madZ({}, {}, {})", op(VECTOR_0), op(VECTOR_1), op(VECTOR_2));
++#else
+             print("{} * {} + {}", op(VECTOR_0), op(VECTOR_1), op(VECTOR_2));
++#endif
+             break;
+ 
+         case AluVectorOpcode::CndEq:
+@@ -955,11 +1150,19 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
+                 break;
+             }
+         #endif
++        #ifdef REEOT_RECOMP
++            print("dotZ({}, {})", op(VECTOR_0), op(VECTOR_1));
++        #else
+             print("dot({}, {})", op(VECTOR_0), op(VECTOR_1));
++        #endif
+             break;
+ 
+         case AluVectorOpcode::Dp2Add:
++#ifdef REEOT_RECOMP
++            print("dotZ({}, {}) + {}", op(VECTOR_0), op(VECTOR_1), op(VECTOR_2));
++#else
+             print("dot({}, {}) + {}", op(VECTOR_0), op(VECTOR_1), op(VECTOR_2));
++#endif
+             break;
+ 
+         case AluVectorOpcode::Cube:
+@@ -1078,12 +1281,20 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
+             break;
+ 
+         case AluScalarOpcode::Muls:
++#ifdef REEOT_RECOMP
++            print("mulZ({}, {})", op(SCALAR_0), op(SCALAR_1));
++#else
+             print("{} * {}", op(SCALAR_0), op(SCALAR_1));
++#endif
+             break;
+ 
+         case AluScalarOpcode::MulsPrev:
+         case AluScalarOpcode::MulsPrev2:
++#ifdef REEOT_RECOMP
++            print("mulZ({}, ps)", op(SCALAR_0));
++#else
+             print("{} * ps", op(SCALAR_0));
++#endif
+             break;
+ 
+         case AluScalarOpcode::Maxs:
+@@ -1207,7 +1418,11 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
+ 
+         case AluScalarOpcode::Mulsc0:
+         case AluScalarOpcode::Mulsc1:
++#ifdef REEOT_RECOMP
++            print("mulZ({}, {})", op(SCALAR_CONSTANT_0), op(SCALAR_CONSTANT_1));
++#else
+             print("{} * {}", op(SCALAR_CONSTANT_0), op(SCALAR_CONSTANT_1));
++#endif
+             break;
+ 
+         case AluScalarOpcode::Addsc0:
+@@ -1326,6 +1541,7 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
+ 
+     if (instr.scalarOpcode >= AluScalarOpcode::KillsEq && instr.scalarOpcode <= AluScalarOpcode::KillsOne)
+     {
++        shaderFlags |= 1;
+         indent();
+         out += "clip(ps != 0.0 ? -1 : 1);\n";
+     }
+@@ -1353,10 +1569,16 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
+ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_view& include)
+ {
+     const auto shaderContainer = reinterpret_cast<const ShaderContainer*>(shaderData);
++    textureFetchMask = 0;
+ 
+     assert((shaderContainer->flags & 0xFFFFFF00) == 0x102A1100);
+     assert(shaderContainer->constantTableOffset != NULL);
+ 
++    // Vertex shaders can't sample with implicit LOD (no derivatives); Xenos
++    // vertex texture fetches read mip 0. Turn the helpers' Sample calls into
++    // SampleLevel(..., 0) for vertex shaders.
++    if ((shaderContainer->flags & 0x1) != 0)
++        out += "#define Sample(s, uv) SampleLevel(s, uv, 0)\n";
+     out += include;
+     out += '\n';
+ 
+@@ -1414,6 +1636,15 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+                         constantName, tailCount, shaderName, constantInfo->registerIndex.get(), tailCount - 1);
+ #endif
+             }
++            else if (std::string_view(constantName) == "g_TileOffsetSize")
++            {
++                // Fable 2: predicated tiling. The frame is drawn in two tiles on
++                // the console and xy is the current tile's screen offset (0.8
++                // for the lower tile); the host draws the whole frame at once,
++                // so pixel positions are already screen-absolute.
++                println("#define {} (vk::RawBufferLoad<float4>(g_PushConstants.{}ShaderConstants + {}, 0x10) * float4(g_TileOffsetKeep, g_TileOffsetKeep, 1.0, 1.0))",
++                    constantName, shaderName, constantInfo->registerIndex * 16);
++            }
+             else
+             {
+                 println("#define {} vk::RawBufferLoad<float4>(g_PushConstants.{}ShaderConstants + {}, 0x10)",
+@@ -1446,11 +1677,11 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+             for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
+             {
+                 println("#define {}_Texture{}DescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
+-                    constantName, TEXTURE_DIMENSIONS[j], j * 64 + constantInfo->registerIndex * 4);
++                    constantName, TEXTURE_DIMENSIONS[j], textureDescriptorOffset(j, constantInfo->registerIndex));
+             }
+ 
+             println("#define {}_SamplerDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
+-                constantName, std::size(TEXTURE_DIMENSIONS) * 64 + constantInfo->registerIndex * 4);
++                constantName, samplerDescriptorOffset(constantInfo->registerIndex));
+ 
+             samplers.emplace(constantInfo->registerIndex, constantName);
+             break;
+@@ -1469,17 +1700,17 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+     }
+ 
+ #ifdef REEOT_RECOMP
+-    for (uint32_t r = 0; r < 16; r++)
++    for (uint32_t r = 0; r < 20; r++)
+     {
+         if (samplers.find(r) != samplers.end())
+             continue;
+         for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
+         {
+             println("#define s{}_Texture{}DescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
+-                r, TEXTURE_DIMENSIONS[j], j * 64 + r * 4);
++                r, TEXTURE_DIMENSIONS[j], textureDescriptorOffset(j, r));
+         }
+         println("#define s{}_SamplerDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
+-            r, std::size(TEXTURE_DIMENSIONS) * 64 + r * 4);
++            r, samplerDescriptorOffset(r));
+     }
+ #endif
+ 
+@@ -1683,10 +1914,16 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+ #endif
+ 
+         out += "#ifdef __spirv__\n";
+-        out += "\tin bool iFace : SV_IsFrontFace\n";
++        out += "\tin bool iFace : SV_IsFrontFace,\n";
++        out += "\t[[vk::location(30)]] in float4 iPointInfo : XEPOINTINFO\n";
+         out += "#else\n";
+         out += "\tin uint iFace : SV_IsFrontFace\n";
+         out += "#endif\n";
++    #ifdef REEOT_RECOMP
++        // Point sprite coordinate (Xenos puts it in .zw of the position register).
++        // (A PointCoord input broke every non-point pipeline on Metal; the
++        // sprite coordinate needs another route.)
++    #endif
+ 
+         auto pixelShader = reinterpret_cast<const PixelShader*>(shader);
+         if (pixelShader->outputs & PIXEL_SHADER_OUTPUT_COLOR0)
+@@ -1707,6 +1944,11 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+     else
+     {
+         auto vertexShader = reinterpret_cast<const VertexShader*>(shader);
++        // Fable 2: some shaders fetch the same usage several times (manual
++        // fetches of neighbouring vertices or instance data). Every fetch of a
++        // usage reads the same input variable, so declare each usage once.
++        std::set<uint32_t> declaredUsages;
++        bool repeatedUsages = false;
+         for (uint32_t i = 0; i < vertexShader->vertexElementCount; i++)
+         {
+             union
+@@ -1717,6 +1959,13 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+ 
+             value = vertexShader->vertexElementsAndInterpolators[vertexShader->field18 + i];
+ 
++            if (!declaredUsages.insert(uint32_t(vertexElement.usage) | (uint32_t(vertexElement.usageIndex) << 4)).second)
++            {
++                repeatedUsages = true;
++                vertexElements.emplace(uint32_t(vertexElement.address), vertexElement);
++                continue;
++            }
++
+             const char* usageType = USAGE_TYPES[uint32_t(vertexElement.usage)];
+ 
+         #ifdef UNLEASHED_RECOMP
+@@ -1747,7 +1996,12 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+ 
+             vertexElements.emplace(uint32_t(vertexElement.address), vertexElement);
+         }
++        if (repeatedUsages)
++            fmt::println(stderr, "NOTE vertex shader with repeated vertex fetch usages (needs vertex pulling)");
+ 
++    #ifdef REEOT_RECOMP
++        out += "\tin uint iVertexId : SV_VertexID,\n";
++    #endif
+     #ifdef UNLEASHED_RECOMP
+         if (hasIndexCount)
+         {
+@@ -1757,6 +2011,10 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+     #endif
+ 
+         out += "\tout float4 oPos : SV_Position";
++    #ifdef REEOT_RECOMP
++        out += "\n#ifdef __spirv__\n\t, [[vk::ext_decorate(11, 1)]] out float oPointSize : XEPOINTSIZE\n"
++               "\t, [[vk::location(30)]] out float4 oPointInfo : XEPOINTINFO\n#endif\n";
++    #endif
+ 
+ #ifdef REEOT_RECOMP
+         for (size_t k = 0; k < std::size(INTERPOLATORS); k++)
+@@ -1864,7 +2122,8 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+         out += "\n";
+     }
+ 
+-    bool printedRegisters[32]{};
++    // Fable 2: Xenos shaders address up to 64 registers (vs db2acd98 uses r32-r34).
++    bool printedRegisters[64]{};
+ 
+     uint32_t interpolatorCount = (shader->interpolatorInfo >> 5) & 0x1F;
+ 
+@@ -1899,6 +2158,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+         if (velocity)
+             out += "\tif (velIter == 1) oVelPrev = oPos;\n";
+         out += "\toPos = 0.0;\n";
++        out += "#ifdef __spirv__\n\toPointInfo = 0.0;\n#endif\n";
+     #endif
+ 
+ #ifdef REEOT_RECOMP
+@@ -1923,7 +2183,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+         out += "\n";
+     }
+ 
+-    for (size_t i = 0; i < 32; i++)
++    for (size_t i = 0; i < 64; i++)
+     {
+         if (!printedRegisters[i])
+         {
+@@ -1934,8 +2194,23 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+             print("\tfloat4 r{} = ", i);
+             if (isPixelShader && i == ((shader->fieldC >> 8) & 0xFF))
+             {
++            #ifdef REEOT_RECOMP
++                // Pixel position in guest pixels (the renderer draws at a scale).
++                out += "float4((iPos.xy * g_PixelPosScale - 0.5) * float2(iFace ? 1.0 : -1.0, 1.0), "
++                       "g_IsPointDraw != 0 ? POINT_COORD : float2(0.0, 0.0));\n";
++            #else
+                 out += "float4((iPos.xy - 0.5) * float2(iFace ? 1.0 : -1.0, 1.0), 0.0, 0.0);\n";
++            #endif
++            }
++        #ifdef REEOT_RECOMP
++            else if (!isPixelShader && i == 0)
++            {
++                // Xenos starts vertex shaders with the vertex index in r0.x (the
++                // renderer rebases indices by g_HostBaseVertex), or with
++                // (patch, u, v) in tessellated patch draws.
++                out += "xeVertexRegister(iVertexId);\n";
+             }
++        #endif
+         #ifdef UNLEASHED_RECOMP
+             else if (!isPixelShader && hasIndexCount && i == 0)
+             {
+@@ -1950,6 +2225,9 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+     }
+ 
+     out += "\tint a0 = 0;\n";
++#ifdef REEOT_RECOMP
++    out += "\tint vpElement = 0;\n";
++#endif
+     out += "\tint aL = 0;\n";
+     out += "\tbool p0 = false;\n";
+ #ifdef REEOT_RECOMP
+@@ -1958,6 +2236,11 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+ #endif
+     out += "\tfloat ps = 0.0;\n";
+     out += "\tfloat4 vpre = 0.0;\n";
++    if (!isPixelShader)
++        out += "\tfloat4 oUnusedExport = 0.0;\n";
++    #ifdef REEOT_RECOMP
++        out += "\tfloat4 oPointSizeExport = 0.0;\n";
++    #endif
+     if (isPixelShader)
+     {
+ #ifdef UNLEASHED_RECOMP
+@@ -2196,12 +2479,33 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+ #ifdef REEOT_RECOMP
+     straightLineFlow = simpleControlFlow;
+ #endif
++    // Fable 2: unstructurable control flow whose jumps all go forward (no
++    // loops) needs no loop or switch: each block runs if (pc <= block) and a
++    // jump just sets pc. GPU compilers handled the loop/switch state machine
++    // badly (spills, no optimisation across blocks): the terrain layers.
++    bool forwardOnly = false;
++    if (!simpleControlFlow)
++    {
++        forwardOnly = true;
++        for (uint32_t i = 0; i < cfSummaries.size(); ++i)
++        {
++            const CfSummary& summary = cfSummaries[i];
++            if (summary.kind == CfKind::LoopStart || summary.kind == CfKind::LoopEnd ||
++                ((summary.kind == CfKind::Cond || summary.kind == CfKind::Uncond) && summary.target <= i))
++                forwardOnly = false;
++        }
++    }
+ 
+     if (simpleControlFlow)
+     {
+         out += '\n';
+         indentation = 1;
+     }
++    else if (forwardOnly)
++    {
++        out += "\n\tuint pc = 0;\n";
++        out += "\t{\n";
++    }
+     else
+     {
+         out += "\n\tuint pc = 0;\n";
+@@ -2224,7 +2528,14 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+ 
+         for (auto& cfInstr : controlFlow)
+         {
+-            if (!simpleControlFlow)
++            if (forwardOnly)
++            {
++                indentation = 2;
++                out += "\t}\n";
++                println("\tif (pc <= {})", pc);
++                out += "\t{\n";
++            }
++            else if (!simpleControlFlow)
+             {
+                 indentation = 3;
+                 println("\t\tcase {}:", pc);
+@@ -2350,7 +2661,8 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+                     if (!simpleControlFlow)
+                     {
+                         println("\t\t\tpc = {};", uint32_t(cfInstr.condJmp.address));
+-                        out += "\t\t\tcontinue;\n";
++                        if (!forwardOnly)
++                            out += "\t\t\tcontinue;\n";
+                     }
+                 }
+                 else
+@@ -2388,7 +2700,8 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+                     {
+                         out += "\t\t\t{\n";
+                         println("\t\t\t\tpc = {};", uint32_t(cfInstr.condJmp.address));
+-                        out += "\t\t\t\tcontinue;\n";
++                        if (!forwardOnly)
++                            out += "\t\t\t\tcontinue;\n";
+                         out += "\t\t\t}\n";
+                     }
+                 }
+@@ -2504,10 +2817,40 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+                 #endif
+ 
+                 #ifdef REEOT_RECOMP
++                    // Fable 2: Xenos alpha to mask. The console dithers coverage
++                    // over each 2x2 pixel quad with RB_COLORCONTROL's offsets
++                    // (the camera fade of objects in front of the hero); a host
++                    // single threshold made them vanish at once. Each guest
++                    // pixel's 2x2 host pixels refine the quad's 4 levels to 16.
++                    indent();
++                    out += "[branch] if (g_AlphaToMask & 0x80000000u)";
++                    indent();
++                    out += '{';
++                    indent();
++                    out += "\tuint2 xeA2mHost = uint2(iPos.xy);\n";
++                    indent();
++                    out += "\tuint2 xeA2mGuest = uint2(iPos.xy * g_PixelPosScale);\n";
++                    indent();
++                    out += "\tuint xeA2mQuad = ((xeA2mGuest.y & 1u) << 1) | (xeA2mGuest.x & 1u);\n";
++                    indent();
++                    out += "\tuint xeA2mSub = ((xeA2mHost.y & 1u) << 1) | (xeA2mHost.x & 1u);\n";
++                    indent();
++                    out += "\tfloat xeA2mLevel = float(((g_AlphaToMask >> (xeA2mQuad * 2u)) & 3u) * 4u + ((0x78u >> (xeA2mSub * 2u)) & 3u));\n";
++                    indent();
++                    out += "\tclip(oC0.w - (xeA2mLevel + 0.5) / 16.0);\n";
++                    indent();
++                    out += '}';
++                    indent();
++                    out += "[branch] if (g_SpecConstants() & SPEC_CONSTANT_NAN_PAINT) { if (any(isnan(oC0)) || any(isinf(oC0))) oC0 = float4(1.0, 0.0, 1.0, 1.0); }\n";
++                    specConstantsMask |= SPEC_CONSTANT_NAN_PAINT;
+                     indent();
+                     out += "[branch] if (g_PackedDec3 & 0x80000000u) oC0.rgb = linearToPWLGamma(oC0.rgb);\n";
+                     indent();
+                     out += "[branch] if (g_PackedDec3 & 0x40000000u) oC0 = saturate(oC0);\n";
++                    // Fable 2: 7e3 float targets clamp writes to [0, 31.875] and
++                    // cannot hold NaN or infinity; the host's 16-bit float targets can.
++                    indent();
++                    out += "[branch] if (g_PackedDec3 & 0x20000000u) oC0 = min(max(select(isnan(oC0), 0.0, oC0), 0.0), 31.875);\n";
+                 #endif
+                 }
+                 else
+@@ -2516,9 +2859,27 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+                     if (!hasMtxProjection)
+                 #endif
+                     {
++                    #ifdef REEOT_RECOMP
++                        // Point sprites: the vertex's diameter (export 63 .x) or the
++                        // device's constant size, in host pixels.
++                        out += "#ifdef __spirv__\n";
++                        print("\toPointSize = max(1.0, {} * g_PointSizeScale);\n",
++                              pointSizeExported ? "oPointSizeExport.x" : "g_PointSizeConstant");
++                        out += "#endif\n";
++                    #endif
+                         out += "\toPos.xy += g_HalfPixelOffset * oPos.w;\n";
+                     #ifdef REEOT_RECOMP
+                         out += "\toPos.xyz = oPos.xyz * g_PosScale.xyz + g_PosOffset.xyz * oPos.w;\n";
++                        // Point sprites: centre (NDC) and diameter (host pixels) for the
++                        // pixel shader's sprite coordinate (xePointCoord).
++                        out += "#ifdef __spirv__\n";
++                        print("\toPointInfo = float4(oPos.xy / oPos.w, max(1.0, {} * g_PointSizeScale), 0.0);\n",
++                              pointSizeExported ? "oPointSizeExport.x" : "g_PointSizeConstant");
++                        // A memory store in every vertex shader (even behind a branch)
++                        // cost Apple GPUs their vertex fast paths: the scene's vertex
++                        // work was ~3x. Debug builds of the cache define XE_DEBUG_VERTEX.
++                        out += "#ifdef XE_DEBUG_VERTEX\n\txeDebugVertex(iVertexId, oPos, oPointInfo.z);\n#endif\n";
++                        out += "#endif\n";
+                     #endif
+                     }
+                 }
+@@ -2542,6 +2903,10 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+                         out += "return;\n";
+                     }
+                 }
++                else if (forwardOnly)
++                {
++                    out += "\t\tpc = 0xFFFFu;\n";
++                }
+                 else
+                 {
+                     out += "\t\t\tbreak;\n";
+@@ -2560,7 +2925,11 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+         instrAddress += 12;
+     }
+ 
+-    if (!simpleControlFlow)
++    if (forwardOnly)
++    {
++        out += "\t}\n";
++    }
++    else if (!simpleControlFlow)
+     {
+         out += "\t\t\tbreak;\n";
+         out += "\t\t}\n";
+@@ -2656,7 +3025,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+ 
+         if (precisePs && psDeclOffset != 0)
+             out.insert(psDeclOffset, "precise ");
+-        for (int32_t reg = 31; reg >= 0; reg--)
++        for (int32_t reg = 63; reg >= 0; reg--)
+         {
+             if (((preciseRegisters >> reg) & 1) && registerDeclOffsets[reg] != 0)
+                 out.insert(registerDeclOffsets[reg], "precise ");
+diff --git a/XenosRecomp/shader_recompiler.h b/XenosRecomp/shader_recompiler.h
+index 1582464..9c25676 100644
+--- a/XenosRecomp/shader_recompiler.h
++++ b/XenosRecomp/shader_recompiler.h
+@@ -23,6 +23,8 @@ struct StringBuffer
+ 
+ #ifdef REEOT_RECOMP
+ //   w0: usage:4 | usageIndex:4 | isMiniFetch:1
++//   Vertex pulling records (fetches indexed by a register other than r0, read
++//   from memory by the shader): w0 = 0x200 | fetchSlot << 16, w1 = 0.
+ //   w1: instrAddress:16 | parentFullFetchAddress:16  (96-bit instruction units,
+ //       relative to the physical code start = ShaderCacheEntry.vfetch_code_offset)
+ struct VertexFetchLayoutRecord
+@@ -50,9 +52,15 @@ struct ShaderRecompiler : StringBuffer
+ #ifdef REEOT_RECOMP
+     std::vector<VertexFetchLayoutRecord> vertexLayout;
+     uint32_t lastFullVfetchAddress = 0;
++    bool lastFullVfetchPulled = false;
++    bool pointSizeExported = false;
++    uint32_t pullSiteCount = 0;
++    void recompilePulled(const VertexFetchInstruction& instr, uint32_t address);
+     uint32_t physicalCodeOffset = 0;
+     bool usesFloatConstants = false;
+     uint32_t interpolantMask = 0;
++    uint32_t textureFetchMask = 0;  // fetch constants read by texture fetches
++    uint32_t shaderFlags = 0;  // Fable 2: 1 = the pixel shader kills pixels or writes depth
+     enum class InterpolantVariant : uint8_t { Trimmed, Full, PositionOnly, Velocity };
+     InterpolantVariant interpolantVariant = InterpolantVariant::Trimmed;
+     bool velocityVertexShader() const { return !isPixelShader && interpolantVariant == InterpolantVariant::Velocity; }
+@@ -72,7 +80,7 @@ struct ShaderRecompiler : StringBuffer
+         bool positionReadsPs;
+     };
+     std::vector<VertexAluWrite> vertexAluWrites;
+-    size_t registerDeclOffsets[32]{};
++    size_t registerDeclOffsets[64]{};
+     size_t psDeclOffset = 0;
+     bool straightLineFlow = true;
+ #endif

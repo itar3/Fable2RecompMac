@@ -1,0 +1,39 @@
+{
+    "version": 6,
+    "configurePresets": [
+        {
+            "name": "macos-base",
+            "hidden": true,
+            "generator": "Ninja",
+            "binaryDir": "${sourceDir}/out/build/${presetName}",
+            "cacheVariables": {
+                "CMAKE_C_COMPILER": "clang",
+                "CMAKE_CXX_COMPILER": "clang++",
+                "CMAKE_OSX_ARCHITECTURES": "arm64",
+                "CMAKE_PREFIX_PATH": "$env{REXSDK}",
+                "FABLE2_NATIVE_RENDERER": "ON"
+            },
+            "condition": {
+                "type": "equals",
+                "lhs": "${hostSystemName}",
+                "rhs": "Darwin"
+            }
+        },
+        {
+            "name": "mac-arm64-native",
+            "displayName": "macOS Apple Silicon, Release",
+            "inherits": "macos-base",
+            "cacheVariables": { "CMAKE_BUILD_TYPE": "Release" }
+        },
+        {
+            "name": "mac-arm64-native-relwithdebinfo",
+            "displayName": "macOS Apple Silicon, Release with debug info (profiling)",
+            "inherits": "macos-base",
+            "cacheVariables": { "CMAKE_BUILD_TYPE": "RelWithDebInfo" }
+        }
+    ],
+    "buildPresets": [
+        { "name": "mac-arm64-native", "configurePreset": "mac-arm64-native" },
+        { "name": "mac-arm64-native-relwithdebinfo", "configurePreset": "mac-arm64-native-relwithdebinfo" }
+    ]
+}

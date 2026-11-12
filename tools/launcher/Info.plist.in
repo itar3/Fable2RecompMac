@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>Fable 2</string>
+	<key>CFBundleDisplayName</key>
+	<string>Fable 2</string>
+	<key>CFBundleIdentifier</key>
+	<string>com.fable2recomp.launcher</string>
+	<key>CFBundleExecutable</key>
+	<string>Fable 2</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.role-playing-games</string>
+	<key>Fable2GameDir</key>
+	<string>@FABLE2_LAUNCHER_GAME_DIR@</string>
+	<key>Fable2AssetsDir</key>
+	<string>@FABLE2_LAUNCHER_ASSETS_DIR@</string>
+	<key>Fable2GameImageHash</key>
+	<string>@FABLE2_LAUNCHER_IMAGE_HASH@</string>
+	<key>Fable2GameImageLabel</key>
+	<string>@FABLE2_LAUNCHER_IMAGE_LABEL@</string>
+	<key>Fable2ShaderDumpDir</key>
+	<string>@FABLE2_LAUNCHER_SHADER_DUMP_DIR@</string>
+</dict>
+</plist>

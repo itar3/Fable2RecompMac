@@ -1,0 +1,20 @@
+# Builds
+out/
+build/
+.cache/
+compile_commands.json
+
+# Your game: its files, the code generated from them and the shaders captured
+# from them must never be committed.
+assets/*
+generated/*
+shader_dump/
+
+# The game executable if built in place
+/Fable2
+
+# macOS and editors
+.DS_Store
+.vscode/
+.idea/
+*.swp

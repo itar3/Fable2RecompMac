@@ -1,0 +1,942 @@
+diff --git a/plume_render_interface.h b/plume_render_interface.h
+index 2048557..9015da3 100644
+--- a/plume_render_interface.h
++++ b/plume_render_interface.h
+@@ -137,6 +137,10 @@ namespace plume {
+         virtual void setScissors(const RenderRect *scissorRects, uint32_t count) = 0;
+         virtual void setFramebuffer(const RenderFramebuffer *framebuffer) = 0;
+         virtual void setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) = 0;
++        // Fable 2: the blend constant (BLEND_FACTOR / INV_BLEND_FACTOR), dynamic on Vulkan.
++        virtual void setBlendConstants(const float rgba[4]) { (void)rgba; }
++        // Fable 2: the stencil reference is dynamic state on Vulkan (front and back).
++        virtual void setStencilReference(uint32_t reference) { (void)reference; }
+         virtual void clearColor(uint32_t attachmentIndex = 0, RenderColor colorValue = RenderColor(), const RenderRect *clearRects = nullptr, uint32_t clearRectsCount = 0) = 0;
+         virtual void clearDepthStencil(bool clearDepth = true, bool clearStencil = true, float depthValue = 1.0f, uint32_t stencilValue = 0, const RenderRect *clearRects = nullptr, uint32_t clearRectsCount = 0) = 0;
+         virtual void copyBufferRegion(RenderBufferReference dstBuffer, RenderBufferReference srcBuffer, uint64_t size) = 0;
+@@ -150,6 +154,9 @@ namespace plume {
+         virtual void discardTexture(const RenderTexture* texture) = 0; // D3D12 only.
+         virtual void resetQueryPool(const RenderQueryPool *queryPool, uint32_t queryFirstIndex, uint32_t queryCount) = 0;
+         virtual void writeTimestamp(const RenderQueryPool *queryPool, uint32_t queryIndex) = 0;
++        // Fable 2: occlusion queries (counting samples that pass depth/stencil).
++        virtual void beginQuery(const RenderQueryPool *queryPool, uint32_t queryIndex) { (void)queryPool; (void)queryIndex; }
++        virtual void endQuery(const RenderQueryPool *queryPool, uint32_t queryIndex) { (void)queryPool; (void)queryIndex; }
+ 
+         // Concrete implementation shortcuts.
+         inline void barriers(RenderBarrierStages stages, const RenderBufferBarrier &barrier) {
+@@ -221,6 +228,8 @@ namespace plume {
+         virtual void queryResults() = 0;
+         virtual const uint64_t *getResults() const = 0;
+         virtual uint32_t getCount() const = 0;
++        // Fable 2: raw results without waiting; false if not all are available.
++        virtual bool getRawResults(uint32_t first, uint32_t count, uint64_t *out) { (void)first; (void)count; (void)out; return false; }
+     };
+ 
+     struct RenderDevice {
+@@ -241,6 +250,7 @@ namespace plume {
+         virtual std::unique_ptr<RenderCommandSemaphore> createCommandSemaphore() = 0;
+         virtual std::unique_ptr<RenderFramebuffer> createFramebuffer(const RenderFramebufferDesc &desc) = 0;
+         virtual std::unique_ptr<RenderQueryPool> createQueryPool(uint32_t queryCount) = 0;
++        virtual std::unique_ptr<RenderQueryPool> createOcclusionQueryPool(uint32_t queryCount) { (void)queryCount; return nullptr; }
+         virtual void setBottomLevelASBuildInfo(RenderBottomLevelASBuildInfo &buildInfo, const RenderBottomLevelASMesh *meshes, uint32_t meshCount, bool preferFastBuild = true, bool preferFastTrace = false) = 0;
+         virtual void setTopLevelASBuildInfo(RenderTopLevelASBuildInfo &buildInfo, const RenderTopLevelASInstance *instances, uint32_t instanceCount, bool preferFastBuild = true, bool preferFastTrace = false) = 0;
+         virtual void setShaderBindingTableInfo(RenderShaderBindingTableInfo &tableInfo, const RenderShaderBindingGroups &groups, const RenderPipeline *pipeline, RenderDescriptorSet **descriptorSets, uint32_t descriptorSetCount) = 0;
+diff --git a/plume_render_interface_types.h b/plume_render_interface_types.h
+index d4d3c51..c09e931 100644
+--- a/plume_render_interface_types.h
++++ b/plume_render_interface_types.h
+@@ -160,6 +160,23 @@ namespace plume {
+         BC7_TYPELESS,
+         BC7_UNORM,
+         BC7_UNORM_SRGB,
++        // Vertex formats: unnormalized integers read as floats.
++        R16G16B16A16_USCALED,
++        R16G16B16A16_SSCALED,
++        R8G8B8A8_USCALED,
++        R8G8B8A8_SSCALED,
++        R16G16_USCALED,
++        R16G16_SSCALED,
++        R8G8_USCALED,
++        R8G8_SSCALED,
++        R16_USCALED,
++        R16_SSCALED,
++        R8_USCALED,
++        R8_SSCALED,
++        A2B10G10R10_UNORM_PACK32,
++        A2B10G10R10_SNORM_PACK32,
++        // Unsigned 11/11/10 float colour (Fable 2: the 7e3 HDR scene targets).
++        B10G11R11_UFLOAT_PACK32,
+         MAX
+     };
+ 
+@@ -599,6 +616,25 @@ namespace plume {
+         case RenderFormat::BC7_UNORM:
+         case RenderFormat::BC7_UNORM_SRGB:
+             return 16;
++        case RenderFormat::R16G16B16A16_USCALED:
++        case RenderFormat::R16G16B16A16_SSCALED:
++            return 8;
++        case RenderFormat::A2B10G10R10_UNORM_PACK32:
++        case RenderFormat::A2B10G10R10_SNORM_PACK32:
++        case RenderFormat::B10G11R11_UFLOAT_PACK32:
++        case RenderFormat::R8G8B8A8_USCALED:
++        case RenderFormat::R8G8B8A8_SSCALED:
++        case RenderFormat::R16G16_USCALED:
++        case RenderFormat::R16G16_SSCALED:
++            return 4;
++        case RenderFormat::R8G8_USCALED:
++        case RenderFormat::R8G8_SSCALED:
++        case RenderFormat::R16_USCALED:
++        case RenderFormat::R16_SSCALED:
++            return 2;
++        case RenderFormat::R8_USCALED:
++        case RenderFormat::R8_SSCALED:
++            return 1;
+         default:
+             assert(false && "Unknown format.");
+             return 1;
+@@ -683,6 +719,22 @@ namespace plume {
+         case RenderFormat::BC7_UNORM:
+         case RenderFormat::BC7_UNORM_SRGB:
+             return 4;
++        case RenderFormat::R16G16B16A16_USCALED:
++        case RenderFormat::R16G16B16A16_SSCALED:
++        case RenderFormat::R8G8B8A8_USCALED:
++        case RenderFormat::R8G8B8A8_SSCALED:
++        case RenderFormat::R16G16_USCALED:
++        case RenderFormat::R16G16_SSCALED:
++        case RenderFormat::R8G8_USCALED:
++        case RenderFormat::R8G8_SSCALED:
++        case RenderFormat::R16_USCALED:
++        case RenderFormat::R16_SSCALED:
++        case RenderFormat::R8_USCALED:
++        case RenderFormat::R8_SSCALED:
++        case RenderFormat::A2B10G10R10_UNORM_PACK32:
++        case RenderFormat::A2B10G10R10_SNORM_PACK32:
++        case RenderFormat::B10G11R11_UFLOAT_PACK32:
++            return 1;
+         default:
+             assert(false && "Unknown format.");
+             return 1;
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+index c0b9c11..5194d88 100644
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -8,6 +8,7 @@
+ #define VMA_IMPLEMENTATION
+ #define VOLK_IMPLEMENTATION 
+ 
++#include <atomic>
+ #include "plume_vulkan.h"
+ 
+ #include <algorithm>
+@@ -253,6 +254,36 @@ namespace plume {
+             return VK_FORMAT_BC7_UNORM_BLOCK;
+         case RenderFormat::BC7_UNORM_SRGB:
+             return VK_FORMAT_BC7_SRGB_BLOCK;
++        case RenderFormat::R16G16B16A16_USCALED:
++            return VK_FORMAT_R16G16B16A16_USCALED;
++        case RenderFormat::R16G16B16A16_SSCALED:
++            return VK_FORMAT_R16G16B16A16_SSCALED;
++        case RenderFormat::R8G8B8A8_USCALED:
++            return VK_FORMAT_R8G8B8A8_USCALED;
++        case RenderFormat::R8G8B8A8_SSCALED:
++            return VK_FORMAT_R8G8B8A8_SSCALED;
++        case RenderFormat::R16G16_USCALED:
++            return VK_FORMAT_R16G16_USCALED;
++        case RenderFormat::R16G16_SSCALED:
++            return VK_FORMAT_R16G16_SSCALED;
++        case RenderFormat::R8G8_USCALED:
++            return VK_FORMAT_R8G8_USCALED;
++        case RenderFormat::R8G8_SSCALED:
++            return VK_FORMAT_R8G8_SSCALED;
++        case RenderFormat::R16_USCALED:
++            return VK_FORMAT_R16_USCALED;
++        case RenderFormat::R16_SSCALED:
++            return VK_FORMAT_R16_SSCALED;
++        case RenderFormat::R8_USCALED:
++            return VK_FORMAT_R8_USCALED;
++        case RenderFormat::R8_SSCALED:
++            return VK_FORMAT_R8_SSCALED;
++        case RenderFormat::A2B10G10R10_UNORM_PACK32:
++            return VK_FORMAT_A2B10G10R10_UNORM_PACK32;
++        case RenderFormat::A2B10G10R10_SNORM_PACK32:
++            return VK_FORMAT_A2B10G10R10_SNORM_PACK32;
++        case RenderFormat::B10G11R11_UFLOAT_PACK32:
++            return VK_FORMAT_B10G11R11_UFLOAT_PACK32;
+         default:
+             assert(false && "Unknown format.");
+             return VK_FORMAT_UNDEFINED;
+@@ -830,6 +861,7 @@ namespace plume {
+ 
+     // VulkanBuffer
+ 
++
+     VulkanBuffer::VulkanBuffer(VulkanDevice *device, VulkanPool *pool, const RenderBufferDesc &desc) {
+         assert(device != nullptr);
+ 
+@@ -1630,6 +1662,11 @@ namespace plume {
+         dynamicStates.clear();
+         dynamicStates.emplace_back(VK_DYNAMIC_STATE_VIEWPORT);
+         dynamicStates.emplace_back(VK_DYNAMIC_STATE_SCISSOR);
++        // Fable 2: blend constants change per draw (camera fade of objects).
++        dynamicStates.emplace_back(VK_DYNAMIC_STATE_BLEND_CONSTANTS);
++        // Fable 2: per-object stencil values made a pipeline per value (10-30 ms
++        // builds mid-game, never matching the recorded ones across runs).
++        dynamicStates.emplace_back(VK_DYNAMIC_STATE_STENCIL_REFERENCE);
+ 
+         if (desc.dynamicDepthBiasEnabled) {
+             dynamicStates.emplace_back(VK_DYNAMIC_STATE_DEPTH_BIAS);
+@@ -2545,6 +2582,7 @@ namespace plume {
+             VkImageView colorAttachmentImageView;
+             RenderFormat colorAttachmentFormat;
+             if (desc.colorAttachmentViews && desc.colorAttachmentViews[i]) {
++                usesViews = true;
+                 const VulkanTextureView* colorAttachmentView = static_cast<const VulkanTextureView *>(desc.colorAttachmentViews[i]);
+                 colorAttachment = colorAttachmentView->texture;
+                 colorAttachmentImageView = colorAttachmentView->vk;
+@@ -2559,8 +2597,13 @@ namespace plume {
+             imageViews.emplace_back(colorAttachmentImageView);
+ 
+             if (i == 0) {
+-                width = uint32_t(colorAttachment->desc.width);
+-                height = colorAttachment->desc.height;
++                // Fable 2: a mip view renders at that mip's size (the base size
++                // made Metal write outside the attachment: GPU page faults).
++                uint32_t mip = 0;
++                if (desc.colorAttachmentViews && desc.colorAttachmentViews[i])
++                    mip = static_cast<const VulkanTextureView *>(desc.colorAttachmentViews[i])->desc.mipSlice;
++                width = std::max(1u, uint32_t(colorAttachment->desc.width) >> mip);
++                height = std::max(1u, uint32_t(colorAttachment->desc.height) >> mip);
+             }
+ 
+             VkAttachmentReference reference = {};
+@@ -2594,6 +2637,8 @@ namespace plume {
+                 depthAttachmentViewDesc.format = depthAttachment->desc.format;
+                 depthAttachmentViewDesc.dimension = RenderTextureDimensionToView(depthAttachment->desc.dimension);
+             }
++            depthHasStencil = RenderFormatIsStencil(depthAttachmentViewDesc.format);
++            usesViews = usesViews || desc.depthAttachmentView != nullptr;
+             if (RenderFormatIsDepth(depthAttachmentViewDesc.format) && RenderFormatIsStencil(depthAttachmentViewDesc.format)) {
+                 // Base image view is configured for sampling depth. For framebuffer attachment,
+                 // create a separate view configured for both depth and stencil.
+@@ -2604,8 +2649,10 @@ namespace plume {
+             imageViews.emplace_back(depthAttachmentImageView);
+ 
+             if (desc.colorAttachmentsCount == 0) {
+-                width = uint32_t(depthAttachment->desc.width);
+-                height = depthAttachment->desc.height;
++                const uint32_t depthMip = desc.depthAttachmentView != nullptr
++                    ? static_cast<const VulkanTextureView *>(desc.depthAttachmentView)->desc.mipSlice : 0;
++                width = std::max(1u, uint32_t(depthAttachment->desc.width) >> depthMip);
++                height = std::max(1u, uint32_t(depthAttachment->desc.height) >> depthMip);
+             }
+ 
+             depthReference.attachment = uint32_t(attachments.size());
+@@ -2647,6 +2694,10 @@ namespace plume {
+             fprintf(stderr, "vkCreateRenderPass failed with error code 0x%X.\n", res);
+             return;
+         }
++        attachmentDescs = attachments;
++        colorRefs = colorReferences;
++        depthRef = depthReference;
++        hasDepth = subpass.pDepthStencilAttachment != nullptr;
+         
+         VkFramebufferCreateInfo fbInfo = {};
+         fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+@@ -2669,11 +2720,65 @@ namespace plume {
+             vkDestroyFramebuffer(device->vk, vk, nullptr);
+         }
+ 
++        for (VkRenderPass pass : clearPasses) {
++            if (pass != VK_NULL_HANDLE) {
++                vkDestroyRenderPass(device->vk, pass, nullptr);
++            }
++        }
++
+         if (renderPass != VK_NULL_HANDLE) {
+             vkDestroyRenderPass(device->vk, renderPass, nullptr);
+         }
+     }
+ 
++    // Fable 2: this framebuffer's render pass with LOAD_OP_CLEAR for the
++    // attachments in mask (compatible with the framebuffer: only load ops differ).
++    VkRenderPass VulkanFramebuffer::clearPass(uint32_t mask) const {
++        mask &= 63;
++        if (mask == 0) {
++            return renderPass;
++        }
++        if (clearPasses[mask] != VK_NULL_HANDLE) {
++            return clearPasses[mask];
++        }
++
++        std::vector<VkAttachmentDescription> descs = attachmentDescs;
++        for (uint32_t i = 0; i < colorRefs.size() && i < 4; i++) {
++            if (mask & (1u << i)) {
++                descs[colorRefs[i].attachment].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
++            }
++        }
++        if (hasDepth) {
++            VkAttachmentDescription &d = descs[depthRef.attachment];
++            if (mask & 16u) {
++                d.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
++            }
++            if ((mask & 32u) && depthHasStencil) {
++                d.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
++            }
++        }
++
++        VkSubpassDescription subpass = {};
++        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
++        subpass.pColorAttachments = !colorRefs.empty() ? colorRefs.data() : nullptr;
++        subpass.colorAttachmentCount = uint32_t(colorRefs.size());
++        subpass.pDepthStencilAttachment = hasDepth ? &depthRef : nullptr;
++
++        VkRenderPassCreateInfo passInfo = {};
++        passInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
++        passInfo.pAttachments = descs.data();
++        passInfo.attachmentCount = uint32_t(descs.size());
++        passInfo.pSubpasses = &subpass;
++        passInfo.subpassCount = 1;
++
++        VkRenderPass pass = VK_NULL_HANDLE;
++        if (vkCreateRenderPass(device->vk, &passInfo, nullptr, &pass) != VK_SUCCESS) {
++            return renderPass;
++        }
++        clearPasses[mask] = pass;
++        return pass;
++    }
++
+     uint32_t VulkanFramebuffer::getWidth() const {
+         return width;
+     }
+@@ -2696,7 +2801,7 @@ namespace plume {
+ 
+     // VulkanQueryPool
+ 
+-    VulkanQueryPool::VulkanQueryPool(VulkanDevice *device, uint32_t queryCount) {
++    VulkanQueryPool::VulkanQueryPool(VulkanDevice *device, uint32_t queryCount, bool occlusion) {
+         assert(device != nullptr);
+         assert(queryCount > 0);
+ 
+@@ -2704,7 +2809,7 @@ namespace plume {
+ 
+         VkQueryPoolCreateInfo createInfo = {};
+         createInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+-        createInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
++        createInfo.queryType = occlusion ? VK_QUERY_TYPE_OCCLUSION : VK_QUERY_TYPE_TIMESTAMP;
+         createInfo.queryCount = queryCount;
+         
+         VkResult res = vkCreateQueryPool(device->vk, &createInfo, nullptr, &vk);
+@@ -2760,6 +2865,11 @@ namespace plume {
+         }
+     }
+ 
++    bool VulkanQueryPool::getRawResults(uint32_t first, uint32_t count, uint64_t *out) {
++        VkResult res = vkGetQueryPoolResults(device->vk, vk, first, count, sizeof(uint64_t) * count, out, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
++        return res == VK_SUCCESS;
++    }
++
+     const uint64_t *VulkanQueryPool::getResults() const {
+         return results.data();
+     }
+@@ -2823,7 +2933,61 @@ namespace plume {
+         }
+     }
+ 
++    // Fable 2 render pass switches (set from the renderer's cvars).
++    std::atomic<bool> g_lazyPassSwitch{true};
++    std::atomic<bool> g_barrierKeepsPass{true};
++    std::atomic<bool> g_lazyClears{true};
++    std::vector<VulkanCommandList::PendingClear> VulkanCommandList::pendingClears;
++    bool VulkanCommandList::pendingWholeDepthClear(const RenderTexture *texture, float *depth, uint32_t *stencil) {
++        const PendingClear *found = nullptr;
++        for (const PendingClear &p : pendingClears) {
++            if (p.texture != texture)
++                continue;
++            if (found != nullptr)
++                return false;
++            found = &p;
++        }
++        if (found == nullptr || found->hasRect || !(found->aspects & VK_IMAGE_ASPECT_DEPTH_BIT))
++            return false;
++        const VulkanTexture *vt = static_cast<const VulkanTexture *>(texture);
++        if (RenderFormatIsStencil(vt->desc.format) && !(found->aspects & VK_IMAGE_ASPECT_STENCIL_BIT))
++            return false;
++        *depth = found->value.depthStencil.depth;
++        *stencil = found->value.depthStencil.stencil;
++        return true;
++    }
++
++    // Called by the renderer before the frame's last command list ends.
++    void VulkanCommandList::lazyClearsEndFrame() {
++        for (PendingClear &p : pendingClears)
++            p.age++;
++    }
++    std::atomic<uint64_t> g_clearsDeferred{0};   // full clears recorded as pending
++    std::atomic<uint64_t> g_clearsAtLoad{0};     // pending clears applied as a draw pass's load action
++    std::atomic<uint64_t> g_clearsFlushed{0};    // pending clears done the old way (something else touched the image)
++    // Fable 2: render pass statistics and a per-pass trace (diag frames).
++    std::atomic<uint64_t> g_passBegins{0};
++    std::atomic<uint64_t> g_bigPassBegins{0};
++    std::atomic<bool> g_passTrace{false};
++    void (*g_passTraceFn)(bool begin, uint32_t width, uint32_t height, uint32_t attachments, const void *caller) = nullptr;
++    // Trace details: the active pass's attachments and its draw/clear counts.
++    const void *g_passTraceImages[3] = {};
++    uint32_t g_passTraceDraws = 0;
++    uint32_t g_passTraceClears = 0;
++
+     void VulkanCommandList::end() {
++        // Clears pending since before the previous frame boundary are done
++        // now; younger ones wait for a later list (a frame has several when
++        // it submits for readbacks; the next pass on the image applies them).
++        for (auto it = pendingClears.begin(); it != pendingClears.end();) {
++            if (it->age >= 2 || !g_lazyClears.load(std::memory_order_relaxed)) {
++                const VulkanTexture *texture = it->texture;
++                flushPendingClears(texture);
++                it = pendingClears.begin();
++            } else {
++                ++it;
++            }
++        }
+         endActiveRenderPass();
+ 
+         VkResult res = vkEndCommandBuffer(vk);
+@@ -2846,6 +3010,47 @@ namespace plume {
+             return;
+         }
+ 
++        if (!pendingClears.empty()) {
++            // Into an attachment layout: the image is about to be drawn into,
++            // and the pass begin applies its clear; other layouts read it.
++            for (uint32_t i = 0; i < textureBarriersCount; i++) {
++                if (textureBarriers[i].texture == nullptr)
++                    continue;
++                const RenderTextureLayout layout = textureBarriers[i].layout;
++                if (layout != RenderTextureLayout::COLOR_WRITE && layout != RenderTextureLayout::DEPTH_WRITE) {
++                    const VulkanTexture *tex = static_cast<const VulkanTexture *>(textureBarriers[i].texture);
++                    if (g_passTrace.load(std::memory_order_relaxed) && g_passTraceFn) {
++                        uint32_t n = 0, rects = 0;
++                        for (const PendingClear &p : pendingClears)
++                            if (p.texture == tex) { n++; rects += p.hasRect ? 1 : 0; }
++                        if (n)
++                            g_passTraceFn(false, n * 100 + rects, uint32_t(layout), 0xFFFE, tex);
++                    }
++                    flushPendingClears(tex);
++                }
++            }
++        }
++
++        if (activeRenderPass != VK_NULL_HANDLE && activeFramebuffer != nullptr && bufferBarriersCount == 0 &&
++            g_barrierKeepsPass.load(std::memory_order_relaxed)) {
++            // Fable 2 on MoltenVK: image layouts mean nothing to Metal, and Metal
++            // orders a texture's writes in earlier encoders before later reads.
++            // A transition of a texture that is not an attachment of the active
++            // pass only updates the recorded layout instead of ending the pass
++            // (a store and reload of every attachment on tile GPUs).
++            bool attached = false;
++            for (uint32_t i = 0; i < textureBarriersCount && !attached; i++) {
++                const VulkanTexture *t = static_cast<const VulkanTexture *>(textureBarriers[i].texture);
++                attached = t == activeFramebuffer->depthAttachment;
++                for (const VulkanTexture *c : activeFramebuffer->colorAttachments)
++                    attached = attached || t == c;
++            }
++            if (!attached) {
++                for (uint32_t i = 0; i < textureBarriersCount; i++)
++                    static_cast<VulkanTexture *>(textureBarriers[i].texture)->textureLayout = textureBarriers[i].layout;
++                return;
++            }
++        }
+         endActiveRenderPass();
+ 
+         const bool geometryEnabled = queue->device->capabilities.geometryShader;
+@@ -2944,14 +3149,16 @@ namespace plume {
+ 
+     void VulkanCommandList::drawInstanced(uint32_t vertexCountPerInstance, uint32_t instanceCount, uint32_t startVertexLocation, uint32_t startInstanceLocation) {
+         assert(activeGraphicsPipelineLayout != nullptr);
+-        checkActiveRenderPass();
++        checkActiveRenderPass(true);
++        g_passTraceDraws++;
+ 
+         vkCmdDraw(vk, vertexCountPerInstance, instanceCount, startVertexLocation, startInstanceLocation);
+     }
+     
+     void VulkanCommandList::drawIndexedInstanced(uint32_t indexCountPerInstance, uint32_t instanceCount, uint32_t startIndexLocation, int32_t baseVertexLocation, uint32_t startInstanceLocation) {
+         assert(activeGraphicsPipelineLayout != nullptr);
+-        checkActiveRenderPass();
++        checkActiveRenderPass(true);
++        g_passTraceDraws++;
+ 
+         vkCmdDrawIndexed(vk, indexCountPerInstance, instanceCount, startIndexLocation, baseVertexLocation, startInstanceLocation);
+     }
+@@ -3114,7 +3321,14 @@ namespace plume {
+     }
+ 
+     void VulkanCommandList::setFramebuffer(const RenderFramebuffer *framebuffer) {
+-        endActiveRenderPass();
++        if (!g_lazyPassSwitch.load(std::memory_order_relaxed)) {
++            endActiveRenderPass();
++        }
++        // Fable 2: the render pass ends only when a draw or clear needs a
++        // different framebuffer (checkActiveRenderPass) or another command
++        // needs it ended. Rebinding the active framebuffer, or binding one
++        // that gets no draws before switching back, used to end and restart
++        // the pass: a store and reload of every attachment on tile GPUs.
+ 
+         if (framebuffer != nullptr) {
+             const VulkanFramebuffer *interfaceFramebuffer = static_cast<const VulkanFramebuffer *>(framebuffer);
+@@ -3129,6 +3343,14 @@ namespace plume {
+         vkCmdSetDepthBias(vk, depthBias, depthBiasClamp, slopeScaledDepthBias);
+     }
+ 
++    void VulkanCommandList::setBlendConstants(const float rgba[4]) {
++        vkCmdSetBlendConstants(vk, rgba);
++    }
++
++    void VulkanCommandList::setStencilReference(uint32_t reference) {
++        vkCmdSetStencilReference(vk, VK_STENCIL_FACE_FRONT_AND_BACK, reference);
++    }
++
+     static void clearCommonRectVector(uint32_t width, uint32_t height, const RenderRect *clearRects, uint32_t clearRectsCount, std::vector<VkClearRect> &rectVector) {
+         rectVector.clear();
+ 
+@@ -3161,7 +3383,20 @@ namespace plume {
+         assert(attachmentIndex < targetFramebuffer->colorAttachments.size());
+         assert((clearRectsCount == 0) || (clearRects != nullptr));
+ 
++        if (clearRectsCount <= 1 && activeFramebuffer != targetFramebuffer) {
++            VkClearValue value = {};
++            value.color.float32[0] = colorValue.r;
++            value.color.float32[1] = colorValue.g;
++            value.color.float32[2] = colorValue.b;
++            value.color.float32[3] = colorValue.a;
++            if (deferClear(targetFramebuffer->colorAttachments[attachmentIndex], value, VK_IMAGE_ASPECT_COLOR_BIT,
++                           clearRectsCount ? clearRects : nullptr)) {
++                return;
++            }
++        }
++
+         checkActiveRenderPass();
++        g_passTraceClears++;
+ 
+         thread_local std::vector<VkClearRect> rectVector;
+         clearCommonRectVector(targetFramebuffer->getWidth(), targetFramebuffer->getHeight(), clearRects, clearRectsCount, rectVector);
+@@ -3181,7 +3416,20 @@ namespace plume {
+         assert(targetFramebuffer != nullptr);
+         assert((clearRectsCount == 0) || (clearRects != nullptr));
+ 
++        if (clearRectsCount <= 1 && activeFramebuffer != targetFramebuffer && targetFramebuffer->depthAttachment != nullptr &&
++            !targetFramebuffer->depthAttachmentReadOnly && (clearDepth || clearStencil)) {
++            VkClearValue value = {};
++            value.depthStencil.depth = depthValue;
++            value.depthStencil.stencil = stencilValue;
++            const VkImageAspectFlags aspects = (clearDepth ? VK_IMAGE_ASPECT_DEPTH_BIT : 0) |
++                                               (clearStencil && targetFramebuffer->depthHasStencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
++            if (aspects != 0 && deferClear(targetFramebuffer->depthAttachment, value, aspects, clearRectsCount ? clearRects : nullptr)) {
++                return;
++            }
++        }
++
+         checkActiveRenderPass();
++        g_passTraceClears++;
+ 
+         thread_local std::vector<VkClearRect> rectVector;
+         clearCommonRectVector(targetFramebuffer->getWidth(), targetFramebuffer->getHeight(), clearRects, clearRectsCount, rectVector);
+@@ -3216,6 +3464,11 @@ namespace plume {
+     }
+ 
+     void VulkanCommandList::copyTextureRegion(const RenderTextureCopyLocation &dstLocation, const RenderTextureCopyLocation &srcLocation, uint32_t dstX, uint32_t dstY, uint32_t dstZ, const RenderBox *srcBox) {
++        // (a buffer side has no texture: nullptr would flush every image)
++        if (!pendingClears.empty() && dstLocation.texture != nullptr)
++            flushPendingClears(static_cast<const VulkanTexture *>(dstLocation.texture));
++        if (!pendingClears.empty() && srcLocation.texture != nullptr)
++            flushPendingClears(static_cast<const VulkanTexture *>(srcLocation.texture));
+         endActiveRenderPass();
+         
+         assert(dstLocation.type != RenderTextureCopyType::UNKNOWN);
+@@ -3297,6 +3550,10 @@ namespace plume {
+     }
+ 
+     void VulkanCommandList::copyTexture(const RenderTexture *dstTexture, const RenderTexture *srcTexture) {
++        if (!pendingClears.empty() && dstTexture != nullptr)
++            flushPendingClears(static_cast<const VulkanTexture *>(dstTexture));
++        if (!pendingClears.empty() && srcTexture != nullptr)
++            flushPendingClears(static_cast<const VulkanTexture *>(srcTexture));
+         endActiveRenderPass();
+ 
+         assert(dstTexture != nullptr);
+@@ -3337,6 +3594,10 @@ namespace plume {
+     }
+ 
+     void VulkanCommandList::resolveTextureRegion(const RenderTexture *dstTexture, uint32_t dstX, uint32_t dstY, const RenderTexture *srcTexture, const RenderRect *srcRect, RenderResolveMode resolveMode) {
++        if (!pendingClears.empty() && dstTexture != nullptr)
++            flushPendingClears(static_cast<const VulkanTexture *>(dstTexture));
++        if (!pendingClears.empty() && srcTexture != nullptr)
++            flushPendingClears(static_cast<const VulkanTexture *>(srcTexture));
+         assert(dstTexture != nullptr);
+         assert(srcTexture != nullptr);
+         assert(resolveMode == RenderResolveMode::AVERAGE && "Vulkan only supports AVERAGE resolve mode.");
+@@ -3466,11 +3727,14 @@ namespace plume {
+     }
+ 
+     void VulkanCommandList::discardTexture(const RenderTexture* texture) {
++        for (auto it = pendingClears.begin(); it != pendingClears.end();)
++            it = it->texture == texture ? pendingClears.erase(it) : it + 1;
+         // Not required in Vulkan.
+     }
+ 
+     void VulkanCommandList::resetQueryPool(const RenderQueryPool *queryPool, uint32_t queryFirstIndex, uint32_t queryCount) {
+         assert(queryPool != nullptr);
++        endActiveRenderPass();
+ 
+         const VulkanQueryPool *interfaceQueryPool = static_cast<const VulkanQueryPool *>(queryPool);
+         vkCmdResetQueryPool(vk, interfaceQueryPool->vk, queryFirstIndex, queryCount);
+@@ -3483,25 +3747,215 @@ namespace plume {
+         vkCmdWriteTimestamp(vk, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, interfaceQueryPool->vk, queryIndex);
+     }
+ 
+-    void VulkanCommandList::checkActiveRenderPass() {
++    // Queries begin and end outside render pass instances, so they span the
++    // render passes recorded in between.
++    void VulkanCommandList::beginQuery(const RenderQueryPool *queryPool, uint32_t queryIndex) {
++        assert(queryPool != nullptr);
++        endActiveRenderPass();
++        // Precise: sample counts, not just "any passed" (MoltenVK otherwise uses Metal's boolean mode).
++        vkCmdBeginQuery(vk, static_cast<const VulkanQueryPool *>(queryPool)->vk, queryIndex,
++                        queue->device->occlusionQueryPrecise ? VK_QUERY_CONTROL_PRECISE_BIT : 0);
++    }
++
++    void VulkanCommandList::endQuery(const RenderQueryPool *queryPool, uint32_t queryIndex) {
++        assert(queryPool != nullptr);
++        endActiveRenderPass();
++        vkCmdEndQuery(vk, static_cast<const VulkanQueryPool *>(queryPool)->vk, queryIndex);
++    }
++
++    // Fable 2: begins fb's pass (statistics and the diag trace included).
++    void VulkanCommandList::beginPass(const VulkanFramebuffer *fb, VkRenderPass pass, const VkClearValue *values, uint32_t valueCount) {
++        g_passTraceImages[0] = !fb->colorAttachments.empty() ? fb->colorAttachments[0] : nullptr;
++        g_passTraceImages[1] = fb->colorAttachments.size() > 1 ? fb->colorAttachments[1] : nullptr;
++        g_passTraceImages[2] = fb->depthAttachment;
++        // Traced before the begin: a diag timestamp written here lies between passes.
++        if (g_passTrace.load(std::memory_order_relaxed) && g_passTraceFn)
++            g_passTraceFn(true, fb->width, fb->height,
++                          uint32_t(fb->colorAttachments.size()) + (fb->depthAttachment ? 1u : 0u), nullptr);
++        VkRenderPassBeginInfo beginInfo = {};
++        beginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
++        beginInfo.renderPass = pass;
++        beginInfo.framebuffer = fb->vk;
++        beginInfo.renderArea.extent.width = fb->width;
++        beginInfo.renderArea.extent.height = fb->height;
++        beginInfo.clearValueCount = valueCount;
++        beginInfo.pClearValues = values;
++        vkCmdBeginRenderPass(vk, &beginInfo, VkSubpassContents::VK_SUBPASS_CONTENTS_INLINE);
++        activeRenderPass = pass;
++        activeFramebuffer = fb;
++        g_passBegins.fetch_add(1, std::memory_order_relaxed);
++        if (uint64_t(fb->width) * fb->height >= 2000000)
++            g_bigPassBegins.fetch_add(1, std::memory_order_relaxed);
++        g_passTraceDraws = 0;
++        g_passTraceClears = 0;
++    }
++
++    static int colorIndexOf(const VulkanFramebuffer *fb, const VulkanTexture *texture) {
++        for (size_t i = 0; i < fb->colorAttachments.size(); i++) {
++            if (fb->colorAttachments[i] == texture)
++                return int(i);
++        }
++        return -1;
++    }
++
++    // Fable 2 lazy clears: records a clear of texture (an attachment of
++    // targetFramebuffer; whole, or one rect) instead of doing it. False: do it now.
++    bool VulkanCommandList::deferClear(const VulkanTexture *texture, VkClearValue value, VkImageAspectFlags aspects, const RenderRect *rect) {
++        if (!g_lazyClears.load(std::memory_order_relaxed) || targetFramebuffer->usesViews || texture == nullptr)
++            return false;
++        // A pass drawing into this image through another framebuffer: end it, so
++        // its next draws come after the clear (the next pass begin applies it).
++        if (activeRenderPass != VK_NULL_HANDLE && activeFramebuffer != nullptr &&
++            (activeFramebuffer->depthAttachment == texture || colorIndexOf(activeFramebuffer, texture) >= 0)) {
++            endActiveRenderPass();
++        }
++        g_clearsDeferred.fetch_add(1, std::memory_order_relaxed);
++        PendingClear p = {};
++        p.texture = texture;
++        p.framebuffer = targetFramebuffer;
++        p.value = value;
++        p.aspects = aspects;
++        p.hasRect = rect != nullptr;
++        if (rect != nullptr) {
++            p.rect.offset.x = rect->left;
++            p.rect.offset.y = rect->top;
++            p.rect.extent.width = uint32_t(std::max(0, rect->right - rect->left));
++            p.rect.extent.height = uint32_t(std::max(0, rect->bottom - rect->top));
++        } else {
++            // A whole clear overwrites the earlier ones of the same aspects.
++            for (auto it = pendingClears.begin(); it != pendingClears.end();)
++                it = it->texture == texture && (it->aspects & ~aspects) == 0 ? pendingClears.erase(it) : it + 1;
++        }
++        pendingClears.push_back(p);
++        return true;
++    }
++
++    // Records p's clear in the active pass (it must have p's image attached).
++    bool VulkanCommandList::applyClearInPass(const PendingClear &p) {
++        const VulkanFramebuffer *fb = activeFramebuffer;
++        VkClearAttachment att = {};
++        att.clearValue = p.value;
++        if (p.aspects & VK_IMAGE_ASPECT_COLOR_BIT) {
++            const int index = colorIndexOf(fb, p.texture);
++            if (index < 0)
++                return false;
++            att.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
++            att.colorAttachment = uint32_t(index);
++        } else {
++            if (fb->depthAttachment != p.texture || fb->depthAttachmentReadOnly)
++                return false;
++            att.aspectMask = p.aspects & (fb->depthHasStencil ? (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)
++                                                              : VK_IMAGE_ASPECT_DEPTH_BIT);
++            if (att.aspectMask == 0)
++                return true;
++        }
++        VkClearRect rect = {};
++        if (p.hasRect) {
++            rect.rect = p.rect;
++        } else {
++            rect.rect.extent.width = fb->width;
++            rect.rect.extent.height = fb->height;
++        }
++        rect.layerCount = 1;
++        if (rect.rect.extent.width == 0 || rect.rect.extent.height == 0)
++            return true;
++        vkCmdClearAttachments(vk, 1, &att, 1, &rect);
++        g_passTraceClears++;
++        return true;
++    }
++
++    // Does the pending clears of texture (all if nullptr) the old way, in a
++    // LOAD pass of the framebuffer they were recorded with. (On MoltenVK a
++    // draw-less pass with a CLEAR load action left the image uncleared.)
++    __attribute__((noinline)) void VulkanCommandList::flushPendingClears(const VulkanTexture *texture) {
++        if (g_passTrace.load(std::memory_order_relaxed) && g_passTraceFn) {
++            bool any = false;
++            for (const PendingClear &p : pendingClears)
++                any = any || texture == nullptr || p.texture == texture;
++            if (any)
++                g_passTraceFn(false, 0, 0, 0xFFFF, __builtin_return_address(0));
++        }
++        for (auto it = pendingClears.begin(); it != pendingClears.end();) {
++            if (texture != nullptr && it->texture != texture) {
++                ++it;
++                continue;
++            }
++            const PendingClear p = *it;
++            pendingClears.erase(it);
++            if (activeFramebuffer != p.framebuffer) {
++                endActiveRenderPass();
++                beginPass(p.framebuffer, p.framebuffer->renderPass, nullptr, 0);
++            }
++            applyClearInPass(p);
++            g_clearsFlushed.fetch_add(1, std::memory_order_relaxed);
++            it = pendingClears.begin();
++        }
++        // The flush pass ends here unless it is the pass a draw is about to use.
++        if (activeFramebuffer != nullptr && activeFramebuffer != targetFramebuffer)
++            endActiveRenderPass();
++    }
++
++    void VulkanCommandList::checkActiveRenderPass(bool forDraw) {
+         assert(targetFramebuffer != nullptr);
+-        
+-        if (activeRenderPass == VK_NULL_HANDLE) {
+-            VkRenderPassBeginInfo beginInfo = {};
+-            beginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+-            beginInfo.renderPass = targetFramebuffer->renderPass;
+-            beginInfo.framebuffer = targetFramebuffer->vk;
+-            beginInfo.renderArea.extent.width = targetFramebuffer->width;
+-            beginInfo.renderArea.extent.height = targetFramebuffer->height;
+-            vkCmdBeginRenderPass(vk, &beginInfo, VkSubpassContents::VK_SUBPASS_CONTENTS_INLINE);
+-            activeRenderPass = targetFramebuffer->renderPass;
++
++        if (activeRenderPass != VK_NULL_HANDLE && activeFramebuffer != targetFramebuffer) {
++            endActiveRenderPass();
++        }
++        if (activeRenderPass != VK_NULL_HANDLE)
++            return;
++
++        // Pending clears of this framebuffer's images happen in this pass: an
++        // image's single whole clear becomes the load action when a draw begins
++        // the pass, the rest are recorded right after the begin.
++        const VulkanFramebuffer *fb = targetFramebuffer;
++        const uint32_t colorCount = std::min<uint32_t>(uint32_t(fb->colorAttachments.size()), 8u);
++        uint32_t mask = 0;
++        VkClearValue values[9] = {};
++        thread_local std::vector<PendingClear> inPass;
++        inPass.clear();
++        thread_local std::vector<const VulkanTexture *> pendingImages;
++        pendingImages.clear();
++        for (const PendingClear &q : pendingClears)
++            pendingImages.push_back(q.texture);
++        for (auto it = pendingClears.begin(); it != pendingClears.end();) {
++            const bool color = (it->aspects & VK_IMAGE_ASPECT_COLOR_BIT) != 0;
++            const int index = color ? colorIndexOf(fb, it->texture)
++                                    : (fb->depthAttachment == it->texture && !fb->depthAttachmentReadOnly ? int(colorCount) : -1);
++            if (index < 0) {
++                ++it;
++                continue;
++            }
++            const auto entries = std::count(pendingImages.begin(), pendingImages.end(), it->texture);
++            uint32_t bits = 0;
++            if (forDraw && !fb->usesViews && !it->hasRect && entries == 1) {
++                if (color) {
++                    bits = index < 4 ? 1u << index : 0u;
++                } else if (it->aspects & VK_IMAGE_ASPECT_DEPTH_BIT) {
++                    bits = 16u | ((it->aspects & VK_IMAGE_ASPECT_STENCIL_BIT) && fb->depthHasStencil ? 32u : 0u);
++                }
++            }
++            if (bits != 0) {
++                mask |= bits;
++                values[index] = it->value;
++                g_clearsAtLoad.fetch_add(1, std::memory_order_relaxed);
++            } else {
++                inPass.push_back(*it);
++            }
++            it = pendingClears.erase(it);
+         }
++        beginPass(fb, fb->clearPass(mask), mask ? values : nullptr,
++                  mask ? colorCount + (fb->hasDepth ? 1u : 0u) : 0u);
++        for (const PendingClear &p : inPass)
++            applyClearInPass(p);
+     }
+ 
+-    void VulkanCommandList::endActiveRenderPass() {
++    __attribute__((noinline)) void VulkanCommandList::endActiveRenderPass() {
+         if (activeRenderPass != VK_NULL_HANDLE) {
++            if (g_passTrace.load(std::memory_order_relaxed) && g_passTraceFn && activeFramebuffer)
++                g_passTraceFn(false, activeFramebuffer->width, activeFramebuffer->height, 0, __builtin_return_address(0));
+             vkCmdEndRenderPass(vk);
+             activeRenderPass = VK_NULL_HANDLE;
++            activeFramebuffer = nullptr;
+         }
+     }
+ 
+@@ -3917,6 +4371,7 @@ namespace plume {
+         deviceFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+         deviceFeatures.pNext = featuresChain;
+         vkGetPhysicalDeviceFeatures2(physicalDevice, &deviceFeatures);
++        occlusionQueryPrecise = deviceFeatures.features.occlusionQueryPrecise == VK_TRUE;
+ 
+         // Check for properties.
+         if (rayTracingFound) {
+@@ -4241,6 +4696,10 @@ namespace plume {
+         return std::make_unique<VulkanQueryPool>(this, queryCount);
+     }
+ 
++    std::unique_ptr<RenderQueryPool> VulkanDevice::createOcclusionQueryPool(uint32_t queryCount) {
++        return std::make_unique<VulkanQueryPool>(this, queryCount, true);
++    }
++
+     void VulkanDevice::setBottomLevelASBuildInfo(RenderBottomLevelASBuildInfo &buildInfo, const RenderBottomLevelASMesh *meshes, uint32_t meshCount, bool preferFastBuild, bool preferFastTrace) {
+         assert(meshes != nullptr);
+         assert(meshCount > 0);
+diff --git a/plume_vulkan.h b/plume_vulkan.h
+index 589d0f9..9500303 100644
+--- a/plume_vulkan.h
++++ b/plume_vulkan.h
+@@ -273,8 +273,18 @@ namespace plume {
+         bool depthAttachmentReadOnly = false;
+         uint32_t width = 0;
+         uint32_t height = 0;
++        // Fable 2: render pass variants with LOAD_OP_CLEAR (bit i: colour
++        // attachment i < 4, bit 4: depth, bit 5: stencil), made on first use.
++        std::vector<VkAttachmentDescription> attachmentDescs;
++        std::vector<VkAttachmentReference> colorRefs;
++        VkAttachmentReference depthRef = {};
++        bool hasDepth = false;
++        bool depthHasStencil = false;
++        bool usesViews = false;  // mip/slice views: clears are not per whole image
++        mutable VkRenderPass clearPasses[64] = {};
+ 
+         VulkanFramebuffer(VulkanDevice *device, const RenderFramebufferDesc &desc);
++        VkRenderPass clearPass(uint32_t mask) const;
+         ~VulkanFramebuffer() override;
+         uint32_t getWidth() const override;
+         uint32_t getHeight() const override;
+@@ -286,9 +296,10 @@ namespace plume {
+         std::vector<uint64_t> results;
+         VkQueryPool vk = VK_NULL_HANDLE;
+ 
+-        VulkanQueryPool(VulkanDevice *device, uint32_t queryCount);
++        VulkanQueryPool(VulkanDevice *device, uint32_t queryCount, bool occlusion = false);
+         virtual ~VulkanQueryPool() override;
+         virtual void queryResults() override;
++        bool getRawResults(uint32_t first, uint32_t count, uint64_t *out) override;
+         virtual const uint64_t *getResults() const override;
+         virtual uint32_t getCount() const override;
+     };
+@@ -302,6 +313,26 @@ namespace plume {
+         const VulkanPipelineLayout *activeGraphicsPipelineLayout = nullptr;
+         const VulkanPipelineLayout *activeRaytracingPipelineLayout = nullptr;
+         VkRenderPass activeRenderPass = VK_NULL_HANDLE;
++        const VulkanFramebuffer *activeFramebuffer = nullptr;
++        // Fable 2 lazy clears: full clears of whole images, applied as the load
++        // action of the next pass that draws into the image, or done the old
++        // way when anything else touches it first.
++        struct PendingClear {
++            const VulkanTexture *texture;
++            const VulkanFramebuffer *framebuffer;  // where it was cleared
++            VkClearValue value;
++            VkImageAspectFlags aspects;
++            bool hasRect;
++            VkRect2D rect;
++            uint32_t age;  // command lists ended since it was recorded
++        };
++        // Shared by the command lists (one records at a time): clears recorded at
++        // the end of a frame carry into the next list on the same queue.
++        static std::vector<PendingClear> pendingClears;
++        static void lazyClearsEndFrame();
++        // Fable 2: true if texture's only pending clear is a whole clear of its
++        // depth (and stencil, if it has one); its values.
++        static bool pendingWholeDepthClear(const RenderTexture *texture, float *depth, uint32_t *stencil);
+ 
+         VulkanCommandList(VulkanCommandQueue *queue);
+         ~VulkanCommandList() override;
+@@ -329,6 +360,8 @@ namespace plume {
+         void setScissors(const RenderRect *scissorRects, uint32_t count) override;
+         void setFramebuffer(const RenderFramebuffer *framebuffer) override;
+         void setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) override;
++        void setBlendConstants(const float rgba[4]) override;
++        void setStencilReference(uint32_t reference) override;
+         void clearColor(uint32_t attachmentIndex, RenderColor colorValue, const RenderRect *clearRects, uint32_t clearRectsCount) override;
+         void clearDepthStencil(bool clearDepth, bool clearStencil, float depthValue, uint32_t stencilValue, const RenderRect *clearRects, uint32_t clearRectsCount) override;
+         void copyBufferRegion(RenderBufferReference dstBuffer, RenderBufferReference srcBuffer, uint64_t size) override;
+@@ -342,8 +375,14 @@ namespace plume {
+         void discardTexture(const RenderTexture* texture) override;
+         void resetQueryPool(const RenderQueryPool *queryPool, uint32_t queryFirstIndex, uint32_t queryCount) override;
+         void writeTimestamp(const RenderQueryPool *queryPool, uint32_t queryIndex) override;
+-        void checkActiveRenderPass();
++        void beginQuery(const RenderQueryPool *queryPool, uint32_t queryIndex) override;
++        void endQuery(const RenderQueryPool *queryPool, uint32_t queryIndex) override;
++        void checkActiveRenderPass(bool forDraw = false);
+         void endActiveRenderPass();
++        void flushPendingClears(const VulkanTexture *texture);  // nullptr: all
++        void beginPass(const VulkanFramebuffer *fb, VkRenderPass pass, const VkClearValue *values, uint32_t valueCount);
++        bool deferClear(const VulkanTexture *texture, VkClearValue value, VkImageAspectFlags aspects, const RenderRect *rect);
++        bool applyClearInPass(const PendingClear &p);
+         void setDescriptorSet(VkPipelineBindPoint bindPoint, const VulkanPipelineLayout *pipelineLayout, const RenderDescriptorSet *descriptorSet, uint32_t setIndex);
+     };
+ 
+@@ -412,6 +451,7 @@ namespace plume {
+         std::vector<VulkanQueueFamily> queueFamilies;
+         RenderDeviceCapabilities capabilities;
+         RenderDeviceDescription description;
++        bool occlusionQueryPrecise = false;
+         VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtPipelineProperties = {};
+         VkPhysicalDeviceSampleLocationsPropertiesEXT sampleLocationProperties = {};
+         std::unique_ptr<RenderBuffer> nullBuffer;
+@@ -436,6 +476,7 @@ namespace plume {
+         std::unique_ptr<RenderCommandSemaphore> createCommandSemaphore() override;
+         std::unique_ptr<RenderFramebuffer> createFramebuffer(const RenderFramebufferDesc &desc) override;
+         std::unique_ptr<RenderQueryPool> createQueryPool(uint32_t queryCount) override;
++        std::unique_ptr<RenderQueryPool> createOcclusionQueryPool(uint32_t queryCount) override;
+         void setBottomLevelASBuildInfo(RenderBottomLevelASBuildInfo &buildInfo, const RenderBottomLevelASMesh *meshes, uint32_t meshCount, bool preferFastBuild, bool preferFastTrace) override;
+         void setTopLevelASBuildInfo(RenderTopLevelASBuildInfo &buildInfo, const RenderTopLevelASInstance *instances, uint32_t instanceCount, bool preferFastBuild, bool preferFastTrace) override;
+         void setShaderBindingTableInfo(RenderShaderBindingTableInfo &tableInfo, const RenderShaderBindingGroups &groups, const RenderPipeline *pipeline, RenderDescriptorSet **descriptorSets, uint32_t descriptorSetCount) override;
