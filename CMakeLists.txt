@@ -79,7 +79,10 @@ endif()
 option(FABLE2_NATIVE_RENDERER "Build the native renderer (Metal through MoltenVK) and the launcher" ON)
 if(FABLE2_NATIVE_RENDERER)
     include(cmake/native_renderer.cmake)
-    if(APPLE)
+    # The launcher app and its extractor (need Xcode); the release app builds
+    # the game on the player's Mac with FABLE2_LAUNCHER=OFF (Command Line Tools only).
+    option(FABLE2_LAUNCHER "Build the launcher app (Fable 2.app) and fable2-extract" ON)
+    if(APPLE AND FABLE2_LAUNCHER)
         include(cmake/launcher.cmake)
     endif()
 endif()
