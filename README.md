@@ -1,10 +1,15 @@
-# Fable2RecompMac
+# Fable2RecompMac: Fable 2 for Mac (Apple Silicon)
 
-A native macOS port of **Fable II** for Apple Silicon Macs. The game's Xbox 360
+Play **Fable 2** (Fable II) natively on your Mac: a native macOS port for
+Apple Silicon (M1, M2, M3, M4 and newer), not an emulator. The game's Xbox 360
 program is statically recompiled to native ARM64 code with the
 [ReXGlue SDK](https://github.com/rexglue/rexglue-sdk), and a native renderer
 draws its graphics through Metal (via MoltenVK) instead of emulating the Xbox
 GPU.
+
+**[Download the latest release](https://github.com/itar3/Fable2RecompMac/releases/latest)**
+(a Mac app: install your game, it builds itself, play), or build it from
+source.
 
 **You need your own copy of the game.** This repository and its download
 contain no game files, no recompiled game code and no game shaders: your copy
