@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <unordered_map>
 #include <cstring>
 #include <format>
 #include <string>
@@ -446,15 +447,42 @@ bool EmulateMemExportDraw(u32 device_va, const u32 *indices, u32 index_count, u3
     }
   }
 
+  // Per fetch, once per draw: the exponent scale. The bone rows (fetches not
+  // indexed by the vertex itself, r0) repeat across the vertices and between
+  // the position and normal sets (24 fetches, 12 rows): each row is decoded
+  // once per draw (decoding every row for every vertex was most of this
+  // emulation's time on the game's render thread).
+  f32 scale[kFetchCount];
+  for (u32 i = 0; i < kFetchCount; ++i)
+    scale[i] = std::ldexp(1.0f, fetches[i].expAdjust);
+  struct Row {
+    Vec4 value;
+    bool ok;
+  };
+  std::unordered_map<u64, Row> rows;
+  rows.reserve(256);
   for (u32 k = 0; k < n; ++k) {
     const u32 vertex = indices ? indices[k] : first + k;
     Vec4 r[32];
     r[0][0] = static_cast<f32>(vertex);
-    for (const Fetch &f : fetches) {
+    for (u32 i = 0; i < kFetchCount; ++i) {
+      const Fetch &f = fetches[i];
       const f32 idx = r[f.src][f.srcComp];
       const i64 element = static_cast<i64>(std::floor(f.rounded ? idx + 0.5f : idx)) * f.stride + f.offset;
       Vec4 val;
-      if (!Decode(streams[f.slot], element, f.format, f.flags, std::ldexp(1.0f, f.expAdjust), val))
+      bool ok;
+      if (f.src != 0) {
+        const u64 key = (u64(f.slot) << 56) ^ (u64(f.format) << 48) ^ (u64(f.flags & 0xFF) << 40) ^
+                        (u64(u32(f.expAdjust) & 0xFF) << 32) ^ u64(u32(element));
+        auto [it, inserted] = rows.try_emplace(key);
+        if (inserted)
+          it->second.ok = Decode(streams[f.slot], element, f.format, f.flags, scale[i], it->second.value);
+        val = it->second.value;
+        ok = it->second.ok;
+      } else {
+        ok = Decode(streams[f.slot], element, f.format, f.flags, scale[i], val);
+      }
+      if (!ok)
         bad_format = true;
       if (f.bgra)
         std::swap(val[0], val[2]);
