@@ -45,10 +45,18 @@ endfunction()
 
 # reeot-XenosRecomp and plume with the Fable 2 patches.
 fable2_apply_patch_series(XenosRecomp "${CMAKE_CURRENT_SOURCE_DIR}/tools/xenosrecomp-patches")
-fable2_apply_patch_series(plume "${CMAKE_CURRENT_SOURCE_DIR}/tools/plume-patches")
+# FABLE2_PLUME_DIR: another plume checkout (e.g. upstream main with the
+# changes under test applied) is used as it is, without tools/plume-patches.
+set(FABLE2_PLUME_DIR "${FABLE2_THIRDPARTY}/plume" CACHE PATH
+    "plume source tree; anything but thirdparty/plume is used as is (no patches)")
+if(FABLE2_PLUME_DIR STREQUAL "${FABLE2_THIRDPARTY}/plume")
+    fable2_apply_patch_series(plume "${CMAKE_CURRENT_SOURCE_DIR}/tools/plume-patches")
+else()
+    message(STATUS "fable2: plume from ${FABLE2_PLUME_DIR} (as is, no patches)")
+endif()
 
 set(PLUME_D3D12_AGILITY_SDK_ENABLED OFF CACHE BOOL "" FORCE)
-add_subdirectory("${FABLE2_THIRDPARTY}/plume" "${CMAKE_BINARY_DIR}/plume" EXCLUDE_FROM_ALL)
+add_subdirectory("${FABLE2_PLUME_DIR}" "${CMAKE_BINARY_DIR}/plume" EXCLUDE_FROM_ALL)
 
 set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
 set(ZSTD_BUILD_SHARED OFF CACHE BOOL "" FORCE)
