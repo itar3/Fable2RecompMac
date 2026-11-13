@@ -1,0 +1,59 @@
+From efba7adccb134f466523a301bdb776f474544ffd Mon Sep 17 00:00:00 2001
+From: itar3 <62651854+itar3@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 15:13:43 +0500
+Subject: [PATCH 1/9] Up to 64 temporary registers
+
+Xenos shaders can address 64 temporary registers, but the register
+declarations (printedRegisters, registerDeclOffsets and the precise pass)
+covered r0-r31: shaders using r32 and up wrote past the arrays and used
+undeclared registers.
+---
+ XenosRecomp/shader_recompiler.cpp | 7 ++++---
+ XenosRecomp/shader_recompiler.h   | 2 +-
+ 2 files changed, 5 insertions(+), 4 deletions(-)
+
+diff --git a/XenosRecomp/shader_recompiler.cpp b/XenosRecomp/shader_recompiler.cpp
+index a664536..c2a02f1 100644
+--- a/XenosRecomp/shader_recompiler.cpp
++++ b/XenosRecomp/shader_recompiler.cpp
+@@ -1864,7 +1864,8 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+         out += "\n";
+     }
+ 
+-    bool printedRegisters[32]{};
++    // Xenos shaders address up to 64 temporary registers (real shaders use r32 and up).
++    bool printedRegisters[64]{};
+ 
+     uint32_t interpolatorCount = (shader->interpolatorInfo >> 5) & 0x1F;
+ 
+@@ -1923,7 +1924,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+         out += "\n";
+     }
+ 
+-    for (size_t i = 0; i < 32; i++)
++    for (size_t i = 0; i < 64; i++)
+     {
+         if (!printedRegisters[i])
+         {
+@@ -2656,7 +2657,7 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+ 
+         if (precisePs && psDeclOffset != 0)
+             out.insert(psDeclOffset, "precise ");
+-        for (int32_t reg = 31; reg >= 0; reg--)
++        for (int32_t reg = 63; reg >= 0; reg--)
+         {
+             if (((preciseRegisters >> reg) & 1) && registerDeclOffsets[reg] != 0)
+                 out.insert(registerDeclOffsets[reg], "precise ");
+diff --git a/XenosRecomp/shader_recompiler.h b/XenosRecomp/shader_recompiler.h
+index 1582464..e452344 100644
+--- a/XenosRecomp/shader_recompiler.h
++++ b/XenosRecomp/shader_recompiler.h
+@@ -72,7 +72,7 @@ struct ShaderRecompiler : StringBuffer
+         bool positionReadsPs;
+     };
+     std::vector<VertexAluWrite> vertexAluWrites;
+-    size_t registerDeclOffsets[32]{};
++    size_t registerDeclOffsets[64]{};
+     size_t psDeclOffset = 0;
+     bool straightLineFlow = true;
+ #endif

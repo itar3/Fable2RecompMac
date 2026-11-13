@@ -1,0 +1,49 @@
+From 555651d78af14184d4bb5a525dfeb6e310ccacd1 Mon Sep 17 00:00:00 2001
+From: itar3 <62651854+itar3@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 15:23:34 +0500
+Subject: [PATCH 7/9] 2D texture fetches with unnormalized coordinates
+
+Fetches whose instruction sets texCoordDenorm pass texel coordinates, but
+were sampled as normalized ones (a 640x360 target read at (320, 180)
+sampled far outside it). They now call tfetch2DDenorm, which divides by the
+texture size. (Not combined with the bicubic GI filter.)
+---
+ XenosRecomp/shader_common.h       | 7 +++++++
+ XenosRecomp/shader_recompiler.cpp | 6 ++++++
+ 2 files changed, 13 insertions(+)
+
+diff --git a/XenosRecomp/shader_common.h b/XenosRecomp/shader_common.h
+index b6797aa..4841e98 100644
+--- a/XenosRecomp/shader_common.h
++++ b/XenosRecomp/shader_common.h
+@@ -233,6 +233,13 @@ float h1(float a)
+     return 1.0f + w3(a) / (w2(a) + w3(a)) + 0.5f;
+ }
+ 
++// Unnormalized (texel) coordinates (the fetch instruction's texCoordDenorm).
++float4 tfetch2DDenorm(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset)
++{
++    Texture2D<float4> texture = g_Texture2DDescriptorHeap[resourceDescriptorIndex];
++    return texture.Sample(g_SamplerDescriptorHeap[samplerDescriptorIndex], (texCoord + offset) / float2(getTexture2DDimensions(texture)));
++}
++
+ float4 tfetch2DBicubic(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset)
+ {
+     Texture2D<float4> texture = g_Texture2DDescriptorHeap[resourceDescriptorIndex];
+diff --git a/XenosRecomp/shader_recompiler.cpp b/XenosRecomp/shader_recompiler.cpp
+index d40e307..b5c6f50 100644
+--- a/XenosRecomp/shader_recompiler.cpp
++++ b/XenosRecomp/shader_recompiler.cpp
+@@ -417,6 +417,12 @@ void ShaderRecompiler::recompile(const TextureFetchInstruction& instr, bool bicu
+ 
+     out += dimension;
+ 
++    // Fetches with unnormalized (texel) coordinates.
++    const bool denorm2D = instr.opcode == FetchOpcode::TextureFetch && instr.texCoordDenorm &&
++        instr.dimension == TextureDimension::Texture2D && !bicubic;
++    if (denorm2D)
++        out += "Denorm";
++
+ #ifdef UNLEASHED_RECOMP
+     if (bicubic)
+         out += "Bicubic";

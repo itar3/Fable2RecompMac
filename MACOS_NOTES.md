@@ -269,12 +269,17 @@ GPU time per draw).
 ## Native renderer debugging workflow (2026-11-04)
 
 Submodule edits live as patch series the build applies at CMake configure time
-(cmake/native_renderer.cmake, `fable2_apply_patch_series`): `tools/xenosrecomp-patches/` (one patch,
-the whole XenosRecomp diff) and `tools/plume-patches/`. Since 2026-11-13 plume's is a series:
-0001-0006 are self-contained, game-agnostic commits prepared as pull requests for zolaware/plume
-(formats, root descriptors, dynamic blend constants/stencil reference, mip-level framebuffer size,
-occlusion queries, render pass kept across framebuffer rebinds) and 0007 holds the renderer-specific
-rest (lazy clears, the MoltenVK barrier shortcut, pass statistics). The renderer opts in to the
+(cmake/native_renderer.cmake, `fable2_apply_patch_series`): `tools/xenosrecomp-patches/` and
+`tools/plume-patches/`. Since 2026-11-13 both are series whose first patches are self-contained,
+game-agnostic commits prepared as pull requests, and whose last patch holds the renderer-specific rest.
+plume 0001-0006 (for zolaware/plume): formats, root descriptors, dynamic blend constants/stencil
+reference, mip-level framebuffer size, occlusion queries, render pass kept across framebuffer rebinds;
+0007: lazy clears, the MoltenVK barrier shortcut, pass statistics. XenosRecomp 0001-0008 (for
+goliathret/reeot-XenosRecomp): 64 registers, repeated vertex fetch usages, exports without an
+interpolator, forward-only control flow, vertex shader fetches at mip 0, no size query for a zero
+offset, unnormalized coordinates, 0 * x = 0 (SPEC_CONSTANT_ZERO_MUL); 0009: everything tied to our
+shared constant layout (vertex pulling, render scale, tessellation, alpha to mask, --blob, ...).
+The split left the translated shader cache byte-identical. The renderer opts in to the
 dynamic blend constant and stencil reference in `CreateHostGraphicsPipeline`.
 A series is checked as a whole (applied to a scratch copy of the index and compared with the working
 tree), so its patches may overlap; a tree with an older patch set is reset to the submodule commit

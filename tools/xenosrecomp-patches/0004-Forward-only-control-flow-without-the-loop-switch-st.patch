@@ -1,0 +1,114 @@
+From 19a6fca7bb632afb9e7a9fb6ade0bb1678b218df Mon Sep 17 00:00:00 2001
+From: itar3 <62651854+itar3@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 15:14:53 +0500
+Subject: [PATCH 4/9] Forward-only control flow without the loop/switch state
+ machine
+
+Shaders whose control flow is not simple were all emitted as a loop around
+a switch on pc. When every jump goes forward (no loops), that is not
+needed: each control flow block now runs under if (pc <= block) and a jump
+only sets pc. GPU shader compilers handled the state machine badly
+(register spills, no optimisation across blocks); Fable II's terrain layer
+shaders showed it.
+---
+ XenosRecomp/shader_recompiler.cpp | 46 ++++++++++++++++++++++++++++---
+ 1 file changed, 42 insertions(+), 4 deletions(-)
+
+diff --git a/XenosRecomp/shader_recompiler.cpp b/XenosRecomp/shader_recompiler.cpp
+index ba011e9..8c2de87 100644
+--- a/XenosRecomp/shader_recompiler.cpp
++++ b/XenosRecomp/shader_recompiler.cpp
+@@ -2229,12 +2229,33 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+ #ifdef REEOT_RECOMP
+     straightLineFlow = simpleControlFlow;
+ #endif
++    // Unstructurable control flow whose jumps all go forward (no loops)
++    // needs no loop or switch: each block runs if (pc <= block) and a jump
++    // just sets pc. GPU compilers handle the loop/switch state machine badly
++    // (register spills, no optimisation across blocks).
++    bool forwardOnly = false;
++    if (!simpleControlFlow)
++    {
++        forwardOnly = true;
++        for (uint32_t i = 0; i < cfSummaries.size(); ++i)
++        {
++            const CfSummary& summary = cfSummaries[i];
++            if (summary.kind == CfKind::LoopStart || summary.kind == CfKind::LoopEnd ||
++                ((summary.kind == CfKind::Cond || summary.kind == CfKind::Uncond) && summary.target <= i))
++                forwardOnly = false;
++        }
++    }
+ 
+     if (simpleControlFlow)
+     {
+         out += '\n';
+         indentation = 1;
+     }
++    else if (forwardOnly)
++    {
++        out += "\n\tuint pc = 0;\n";
++        out += "\t{\n";
++    }
+     else
+     {
+         out += "\n\tuint pc = 0;\n";
+@@ -2257,7 +2278,14 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+ 
+         for (auto& cfInstr : controlFlow)
+         {
+-            if (!simpleControlFlow)
++            if (forwardOnly)
++            {
++                indentation = 2;
++                out += "\t}\n";
++                println("\tif (pc <= {})", pc);
++                out += "\t{\n";
++            }
++            else if (!simpleControlFlow)
+             {
+                 indentation = 3;
+                 println("\t\tcase {}:", pc);
+@@ -2383,7 +2411,8 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+                     if (!simpleControlFlow)
+                     {
+                         println("\t\t\tpc = {};", uint32_t(cfInstr.condJmp.address));
+-                        out += "\t\t\tcontinue;\n";
++                        if (!forwardOnly)
++                            out += "\t\t\tcontinue;\n";
+                     }
+                 }
+                 else
+@@ -2421,7 +2450,8 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+                     {
+                         out += "\t\t\t{\n";
+                         println("\t\t\t\tpc = {};", uint32_t(cfInstr.condJmp.address));
+-                        out += "\t\t\t\tcontinue;\n";
++                        if (!forwardOnly)
++                            out += "\t\t\t\tcontinue;\n";
+                         out += "\t\t\t}\n";
+                     }
+                 }
+@@ -2575,6 +2605,10 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+                         out += "return;\n";
+                     }
+                 }
++                else if (forwardOnly)
++                {
++                    out += "\t\tpc = 0xFFFFu;\n";
++                }
+                 else
+                 {
+                     out += "\t\t\tbreak;\n";
+@@ -2593,7 +2627,11 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+         instrAddress += 12;
+     }
+ 
+-    if (!simpleControlFlow)
++    if (forwardOnly)
++    {
++        out += "\t}\n";
++    }
++    else if (!simpleControlFlow)
+     {
+         out += "\t\t\tbreak;\n";
+         out += "\t\t}\n";

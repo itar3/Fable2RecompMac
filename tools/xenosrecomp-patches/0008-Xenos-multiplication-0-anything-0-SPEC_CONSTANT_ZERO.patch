@@ -1,0 +1,175 @@
+From 8243ae01c09d9739c9019c349e8dfb4cfe8e23cc Mon Sep 17 00:00:00 2001
+From: itar3 <62651854+itar3@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 15:23:42 +0500
+Subject: [PATCH 8/9] Xenos multiplication: 0 * anything = 0
+ (SPEC_CONSTANT_ZERO_MUL)
+
+Xenos multiplies like Direct3D 9: a product with a zero factor is zero even
+when the other factor is infinity or NaN (Xenia emulates this too). IEEE
+multiplication gives NaN instead, which in shaders relying on the console's
+behaviour can spread into black or flickering pixels.
+
+mul, mad, dp2add, dp3/dp4 and the scalar multiplies now go through mulZ,
+madZ and dotZ (and dotP), which zero both factors of a product that has a
+zero factor when SPEC_CONSTANT_ZERO_MUL is set. Every shader with ALU
+instructions lists the bit in its specConstantsMask; without the bit set at
+run time the results are unchanged.
+---
+ XenosRecomp/shader_common.h       | 35 +++++++++++++++++++++++++++++--
+ XenosRecomp/shader_recompiler.cpp | 31 +++++++++++++++++++++++++++
+ 2 files changed, 64 insertions(+), 2 deletions(-)
+
+diff --git a/XenosRecomp/shader_common.h b/XenosRecomp/shader_common.h
+index 4841e98..f1ce74a 100644
+--- a/XenosRecomp/shader_common.h
++++ b/XenosRecomp/shader_common.h
+@@ -12,6 +12,9 @@
+ 
+ #ifdef REEOT_RECOMP
+     #define SPEC_CONSTANT_SINT_TEXCOORD     (1 << 2)
++    // Xenos multiplies as Direct3D 9 did: 0 * anything = 0, infinity and NaN
++    // included, in mul, mad and the dot products (Xenia does the same).
++    #define SPEC_CONSTANT_ZERO_MUL          (1 << 3)
+ #endif
+ 
+ #if !defined(__cplusplus) || defined(__INTELLISENSE__)
+@@ -392,11 +395,38 @@ void eotTwoProduct(float a, float b, out float p, out float e)
+     e = err;
+ }
+ 
+-float dotF(float4 a, float4 b) { return dot(a, b); }
+-float dotF(float3 a, float3 b) { return dot(a, b); }
++// Xenos's multiplication (SPEC_CONSTANT_ZERO_MUL): a product with a zero
++// factor is zero. Zeroing both factors of such products leaves the rest as is.
++#define ZERO_MUL_ON ((g_SpecConstants() & SPEC_CONSTANT_ZERO_MUL) != 0)
++void zeroPair(inout float a, inout float b)
++{
++    if (ZERO_MUL_ON && (a == 0.0 || b == 0.0)) { a = 0.0; b = 0.0; }
++}
++#define ZERO_PAIR_VECTOR(T, B) \
++void zeroPair(inout T a, inout T b) \
++{ \
++    if (ZERO_MUL_ON) { B z = or(a == 0.0, b == 0.0); a = select(z, 0.0, a); b = select(z, 0.0, b); } \
++}
++ZERO_PAIR_VECTOR(float2, bool2)
++ZERO_PAIR_VECTOR(float3, bool3)
++ZERO_PAIR_VECTOR(float4, bool4)
++#define ZERO_MUL_FUNCTIONS(T) \
++T mulZ(T a, T b) { zeroPair(a, b); return a * b; } \
++T madZ(T a, T b, T c) { zeroPair(a, b); return a * b + c; }
++ZERO_MUL_FUNCTIONS(float)
++ZERO_MUL_FUNCTIONS(float2)
++ZERO_MUL_FUNCTIONS(float3)
++ZERO_MUL_FUNCTIONS(float4)
++float dotZ(float4 a, float4 b) { zeroPair(a, b); return dot(a, b); }
++float dotZ(float3 a, float3 b) { zeroPair(a, b); return dot(a, b); }
++float dotZ(float2 a, float2 b) { zeroPair(a, b); return dot(a, b); }
++
++float dotF(float4 a, float4 b) { return dotZ(a, b); }
++float dotF(float3 a, float3 b) { return dotZ(a, b); }
+ 
+ float dotP(float4 a, float4 b)
+ {
++    zeroPair(a, b);
+     float p, s, h, r, q;
+     eotTwoProduct(a.x, b.x, p, s);
+     eotTwoProduct(a.y, b.y, h, r);
+@@ -414,6 +444,7 @@ float dotP(float4 a, float4 b)
+ 
+ float dotP(float3 a, float3 b)
+ {
++    zeroPair(a, b);
+     float p, s, h, r, q;
+     eotTwoProduct(a.x, b.x, p, s);
+     eotTwoProduct(a.y, b.y, h, r);
+diff --git a/XenosRecomp/shader_recompiler.cpp b/XenosRecomp/shader_recompiler.cpp
+index b5c6f50..ee7ae15 100644
+--- a/XenosRecomp/shader_recompiler.cpp
++++ b/XenosRecomp/shader_recompiler.cpp
+@@ -501,6 +501,9 @@ static uint64_t vectorSourceTemps(const AluInstruction& instr)
+ 
+ void ShaderRecompiler::recompile(const AluInstruction& instr)
+ {
++#ifdef REEOT_RECOMP
++    specConstantsMask |= SPEC_CONSTANT_ZERO_MUL;
++#endif
+ #ifdef REEOT_RECOMP
+     VertexAluWrite vertexWrite{};
+     vertexWrite.dotOffset = SIZE_MAX;
+@@ -900,7 +903,11 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
+             break;
+ 
+         case AluVectorOpcode::Mul:
++#ifdef REEOT_RECOMP
++            print("mulZ({}, {})", op(VECTOR_0), op(VECTOR_1));
++#else
+             print("{} * {}", op(VECTOR_0), op(VECTOR_1));
++#endif
+             break;
+ 
+         case AluVectorOpcode::Max:
+@@ -941,7 +948,11 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
+             break;
+ 
+         case AluVectorOpcode::Mad:
++#ifdef REEOT_RECOMP
++            print("madZ({}, {}, {})", op(VECTOR_0), op(VECTOR_1), op(VECTOR_2));
++#else
+             print("{} * {} + {}", op(VECTOR_0), op(VECTOR_1), op(VECTOR_2));
++#endif
+             break;
+ 
+         case AluVectorOpcode::CndEq:
+@@ -974,11 +985,19 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
+                 break;
+             }
+         #endif
++        #ifdef REEOT_RECOMP
++            print("dotZ({}, {})", op(VECTOR_0), op(VECTOR_1));
++        #else
+             print("dot({}, {})", op(VECTOR_0), op(VECTOR_1));
++        #endif
+             break;
+ 
+         case AluVectorOpcode::Dp2Add:
++#ifdef REEOT_RECOMP
++            print("dotZ({}, {}) + {}", op(VECTOR_0), op(VECTOR_1), op(VECTOR_2));
++#else
+             print("dot({}, {}) + {}", op(VECTOR_0), op(VECTOR_1), op(VECTOR_2));
++#endif
+             break;
+ 
+         case AluVectorOpcode::Cube:
+@@ -1097,12 +1116,20 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
+             break;
+ 
+         case AluScalarOpcode::Muls:
++#ifdef REEOT_RECOMP
++            print("mulZ({}, {})", op(SCALAR_0), op(SCALAR_1));
++#else
+             print("{} * {}", op(SCALAR_0), op(SCALAR_1));
++#endif
+             break;
+ 
+         case AluScalarOpcode::MulsPrev:
+         case AluScalarOpcode::MulsPrev2:
++#ifdef REEOT_RECOMP
++            print("mulZ({}, ps)", op(SCALAR_0));
++#else
+             print("{} * ps", op(SCALAR_0));
++#endif
+             break;
+ 
+         case AluScalarOpcode::Maxs:
+@@ -1226,7 +1253,11 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
+ 
+         case AluScalarOpcode::Mulsc0:
+         case AluScalarOpcode::Mulsc1:
++#ifdef REEOT_RECOMP
++            print("mulZ({}, {})", op(SCALAR_CONSTANT_0), op(SCALAR_CONSTANT_1));
++#else
+             print("{} * {}", op(SCALAR_CONSTANT_0), op(SCALAR_CONSTANT_1));
++#endif
+             break;
+ 
+         case AluScalarOpcode::Addsc0:

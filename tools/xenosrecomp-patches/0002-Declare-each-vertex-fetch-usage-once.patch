@@ -1,0 +1,63 @@
+From 9baaaae21045e00e2e08ae44f11cf9ccc95aea1d Mon Sep 17 00:00:00 2001
+From: itar3 <62651854+itar3@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 15:14:15 +0500
+Subject: [PATCH 2/9] Declare each vertex fetch usage once
+
+Some vertex shaders fetch the same usage and usage index more than once
+(manual fetches of neighbouring vertices or instance data). Each fetch
+declared the input again, and the shader failed to compile with a
+redefinition of the parameter. Repeated usages now map to the first
+declaration (and a note is printed: fetches meant to read other vertices
+read the current one).
+---
+ XenosRecomp/shader_recompiler.cpp | 18 ++++++++++++++++++
+ 1 file changed, 18 insertions(+)
+
+diff --git a/XenosRecomp/shader_recompiler.cpp b/XenosRecomp/shader_recompiler.cpp
+index c2a02f1..b5c86c7 100644
+--- a/XenosRecomp/shader_recompiler.cpp
++++ b/XenosRecomp/shader_recompiler.cpp
+@@ -1,3 +1,4 @@
++#include <set>
+ #include "shader_recompiler.h"
+ #include "shader_common.h"
+ 
+@@ -1707,6 +1708,11 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+     else
+     {
+         auto vertexShader = reinterpret_cast<const VertexShader*>(shader);
++        // Some shaders fetch the same usage several times (manual fetches of
++        // neighbouring vertices or instance data). Each usage is one input, so
++        // declare it once (a second declaration does not compile).
++        std::set<uint32_t> declaredUsages;
++        bool repeatedUsages = false;
+         for (uint32_t i = 0; i < vertexShader->vertexElementCount; i++)
+         {
+             union
+@@ -1717,6 +1723,13 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+ 
+             value = vertexShader->vertexElementsAndInterpolators[vertexShader->field18 + i];
+ 
++            if (!declaredUsages.insert(uint32_t(vertexElement.usage) | (uint32_t(vertexElement.usageIndex) << 4)).second)
++            {
++                repeatedUsages = true;
++                vertexElements.emplace(uint32_t(vertexElement.address), vertexElement);
++                continue;
++            }
++
+             const char* usageType = USAGE_TYPES[uint32_t(vertexElement.usage)];
+ 
+         #ifdef UNLEASHED_RECOMP
+@@ -1747,7 +1760,12 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+ 
+             vertexElements.emplace(uint32_t(vertexElement.address), vertexElement);
+         }
++        if (repeatedUsages)
++            fmt::println(stderr, "NOTE vertex shader with repeated vertex fetch usages (they read the same input)");
+ 
++    #ifdef REEOT_RECOMP
++        out += "\tin uint iVertexId : SV_VertexID,\n";
++    #endif
+     #ifdef UNLEASHED_RECOMP
+         if (hasIndexCount)
+         {

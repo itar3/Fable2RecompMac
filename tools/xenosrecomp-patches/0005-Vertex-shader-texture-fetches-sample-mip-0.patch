@@ -1,0 +1,29 @@
+From 7e003ea7f3cb575f00abf651221101c68dd712fc Mon Sep 17 00:00:00 2001
+From: itar3 <62651854+itar3@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 15:21:21 +0500
+Subject: [PATCH 5/9] Vertex shader texture fetches sample mip 0
+
+The tfetch helpers use Sample, which needs implicit derivatives that
+vertex shaders do not have (undefined LOD; Metal rejects or misreads it).
+Xenos vertex texture fetches read the base level, so vertex shaders now
+define Sample(s, uv) as SampleLevel(s, uv, 0) before the helpers.
+---
+ XenosRecomp/shader_recompiler.cpp | 5 +++++
+ 1 file changed, 5 insertions(+)
+
+diff --git a/XenosRecomp/shader_recompiler.cpp b/XenosRecomp/shader_recompiler.cpp
+index 8c2de87..d40e307 100644
+--- a/XenosRecomp/shader_recompiler.cpp
++++ b/XenosRecomp/shader_recompiler.cpp
+@@ -1370,6 +1370,11 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+     assert((shaderContainer->flags & 0xFFFFFF00) == 0x102A1100);
+     assert(shaderContainer->constantTableOffset != NULL);
+ 
++    // Vertex shaders can't sample with implicit LOD (no derivatives); Xenos
++    // vertex texture fetches read mip 0. Turn the helpers' Sample calls into
++    // SampleLevel(..., 0) for vertex shaders.
++    if ((shaderContainer->flags & 0x1) != 0)
++        out += "#define Sample(s, uv) SampleLevel(s, uv, 0)\n";
+     out += include;
+     out += '\n';
+ 

@@ -1,0 +1,51 @@
+From 13f11d0adcba2c252682fa24829a46b18d9db216 Mon Sep 17 00:00:00 2001
+From: itar3 <62651854+itar3@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 15:14:29 +0500
+Subject: [PATCH 3/9] Vertex shader exports without an interpolator no longer
+ crash
+
+Exports to registers that have no interpolator (point size / edge flag /
+kill vertex, 63, and the memory export registers eA and eM0-eM4, 32-37)
+asserted, and in release builds dereferenced the map's end iterator. They
+now write to an unused local, so the shader compiles (memory export prints
+a note: it is not implemented).
+---
+ XenosRecomp/shader_recompiler.cpp | 18 ++++++++++++++++--
+ 1 file changed, 16 insertions(+), 2 deletions(-)
+
+diff --git a/XenosRecomp/shader_recompiler.cpp b/XenosRecomp/shader_recompiler.cpp
+index b5c86c7..ba011e9 100644
+--- a/XenosRecomp/shader_recompiler.cpp
++++ b/XenosRecomp/shader_recompiler.cpp
+@@ -804,8 +804,20 @@ void ShaderRecompiler::recompile(const AluInstruction& instr)
+             default:
+             {
+                 auto findResult = interpolators.find(instr.vectorDest);
+-                assert(findResult != interpolators.end());
+-                exportRegister = findResult->second;
++                if (findResult == interpolators.end())
++                {
++                    // Point size / edge flag / kill (63) and memory export
++                    // (eA 32, eM0..eM4 33..37) aren't implemented yet; write
++                    // them to an unused local so the shader compiles.
++                    const uint32_t reg = uint32_t(instr.vectorDest);
++                    if (reg >= 32 && reg <= 37)
++                        fmt::println(stderr, "NOTE vertex shader uses memory export (needs memexport support)");
++                    exportRegister = "oUnusedExport";
++                }
++                else
++                {
++                    exportRegister = findResult->second;
++                }
+                 break;
+             }
+             }
+@@ -1977,6 +1989,8 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+ #endif
+     out += "\tfloat ps = 0.0;\n";
+     out += "\tfloat4 vpre = 0.0;\n";
++    if (!isPixelShader)
++        out += "\tfloat4 oUnusedExport = 0.0;\n";
+     if (isPixelShader)
+     {
+ #ifdef UNLEASHED_RECOMP
