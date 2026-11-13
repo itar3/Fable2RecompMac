@@ -677,13 +677,13 @@ void LogPerfLocked(VideoState &s) {
     }
   }
   const f64 n = static_cast<f64>(p.frames);
-  EOT_INFO("[perf] {} frames, {:.2f} ms/frame wall (p50 {:.2f} p95 {:.2f} p99 {:.2f} max {:.2f}) | cpu ms/frame: capture {:.2f} wait {:.2f} idle {:.2f} draw {:.2f} ({} draws, {} noop; "
+  EOT_INFO("[perf] {} frames, {:.2f} ms/frame wall (p50 {:.2f} p95 {:.2f} p99 {:.2f} max {:.2f}) | cpu ms/frame: game {:.2f} capture {:.2f} wait {:.2f} idle {:.2f} draw {:.2f} ({} draws, {} noop; "
             "setup {:.2f} tgt {:.2f} psolk {:.2f} ({} memo, {} hot) streams {:.2f} [vtxcopy {:.2f}] const {:.2f} [float {:.2f} bind {:.2f}, {} file hits, {} mask-fast, {} mask-miss] rec {:.2f} [state {:.2f} vbind {:.2f}]; idx {:.2f} outside) resolve {:.2f} ({}; {} copies, {} handed, {} noop, {} dead, {} refresh, {} twin, {:.1f} alias deferred, {:.2f} alias copied; mirror {:.2f} fb {:.2f} bind {:.2f} alias {:.2f} msaa {:.2f}) upload {:.2f} ({}) link "
             "{:.2f} ({}) pso {:.2f} ({}) | guest d3d {:.2f} ({} calls) winmiss {} (@{:#x}) | idxcache hit {} miss {} evict {} vtxcache hit {} miss {} vram {}/{} "
             "| hostbind/f vb {:.1f}/{:.1f} (1s {:.1f}) ib {:.1f}/{:.1f} fb reuse {:.1f} tgtmemo {:.1f} (miss g{:.0f} w{:.0f} s{:.0f}) sorted {:.0f}/{:.0f} tex hit {:.1f}/{:.1f} pso/vp/sc/st {:.1f} (hit {:.1f})/{:.1f}/{:.1f}/{:.1f} barrier {:.1f}/{:.1f} "
             "| present acquire {:.2f} blit {:.2f} submit {:.2f} fence {:.2f} house {:.2f} pace {:.2f} | KB/frame vtx {} "
             "idx {} const {} pull {} ({:.0f} draws, {} mirrored) chunks {:.1f} | gpu {}",
-            p.frames, p.frame_ms / n, wall_p50, wall_p95, wall_p99, wall_max, p.capture_ms / n, p.present_wait_ms / n, p.worker_idle_ms / n,
+            p.frames, p.frame_ms / n, wall_p50, wall_p95, wall_p99, wall_max, p.game_thread_ms / n, p.capture_ms / n, p.present_wait_ms / n, p.worker_idle_ms / n,
             p.draw_ms / n, p.draws / p.frames, p.draws_skipped / p.frames,
             p.setup_ms / n, p.replay_targets_ms / n,
             p.pso_lookup_ms / n, p.replay_memo_hits / p.frames, p.pipeline_hot_hits / p.frames, p.stream_ms / n,
@@ -1139,6 +1139,17 @@ void Video::Present(u32 front_buffer_texture_va) {
     const auto until = std::chrono::steady_clock::now() + std::chrono::microseconds(us);
     while (std::chrono::steady_clock::now() < until) {
     }
+  }
+  // CPU time of the game's rendering thread per frame (this thread's own clock):
+  // CPU-side work shows here even when the GPU sets the frame time.
+  {
+    static thread_local u64 last_cpu_ns = 0;
+    timespec ts{};
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts);
+    const u64 now_ns = u64(ts.tv_sec) * 1000000000ull + u64(ts.tv_nsec);
+    if (last_cpu_ns)
+      s.perf.game_thread_ms += static_cast<f64>(now_ns - last_cpu_ns) * 1e-6;
+    last_cpu_ns = now_ns;
   }
   static thread_local bool pinned = false;
   if (!pinned) {

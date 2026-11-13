@@ -22,6 +22,7 @@ def toggle(build, name, values, period, duration):
         i += 1
         time.sleep(period)
 
+GAME = re.compile(r"cpu ms/frame: game ([0-9.]+)")
 TS = re.compile(r"^\[(\d+-\d+-\d+ \d+:\d+:\d+\.\d+)\]")
 PERF = re.compile(r"\[perf\] \d+ frames, ([0-9.]+) ms/frame wall.*?\((\d+) draws.*?gpu ([0-9.]+) ms/frame: small 16f\+z ([0-9.]+)")
 
@@ -44,12 +45,14 @@ def analyse(log, name, min_draws=1800):
             wall, draws, gpu, main = float(m.group(1)), int(m.group(2)), float(m.group(3)), float(m.group(4))
             if draws < min_draws:
                 continue
-            groups.setdefault(state, []).append((wall, gpu, main))
+            g = GAME.search(line)
+            groups.setdefault(state, []).append((wall, gpu, main, float(g.group(1)) if g else float("nan")))
     for k, v in sorted(groups.items()):
         w = [x[0] for x in v]; g = [x[1] for x in v]; m = [x[2] for x in v]
         sd = statistics.stdev(g) if len(g) > 1 else 0.0
-        print("%s=%s: n=%d wall %.2f gpu %.2f (sd %.2f) main %.2f" %
-              (name, k, len(v), statistics.mean(w), statistics.mean(g), sd, statistics.mean(m)))
+        gm = [x[3] for x in v]
+        print("%s=%s: n=%d wall %.2f gpu %.2f (sd %.2f) main %.2f game-thread cpu %.2f" %
+              (name, k, len(v), statistics.mean(w), statistics.mean(g), sd, statistics.mean(m), statistics.mean(gm)))
 
 if __name__ == "__main__":
     if sys.argv[1] == "toggle":

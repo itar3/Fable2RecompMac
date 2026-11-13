@@ -218,6 +218,10 @@ REXCVAR_DEFINE_INT32(fable2_mirror_constants, 0, "Fable2",
                      "Native renderer: bitmask of ring constant writers mirrored into the device "
                      "shadow (bit 0 821F9918, 1 822192E8, 2 823A4740, 3 8273CFB8, 4 82BA77D0)");
 
+REXCVAR_DEFINE_BOOL(fable2_diag_ring_constants, false, "Fable2",
+                    "Diagnostic: log the ALU constants the ring constant writers write (also when not "
+                    "mirrored; costs a memory query and a packet walk per call)");
+
 namespace {
 
 void NoteRingConstants(uint32_t bit, const char *name, uint32_t first, uint32_t count) {
@@ -290,6 +294,13 @@ void MirrorRingConstants(uint32_t bit, const char *name, uint32_t device, uint32
 #define FABLE2_RING_CONSTANT_WRITER(addr, bit)                         \
   REX_EXTERN(__imp__sub_##addr);                                       \
   extern "C" REX_FUNC(sub_##addr) {                                    \
+    /* Nothing to mirror or log: the game's function alone (the memory \
+       query and packet walk were ~3% of the 3D Engine thread). */     \
+    if (!((REXCVAR_GET(fable2_mirror_constants) >> (bit)) & 1) &&      \
+        !REXCVAR_GET(fable2_diag_ring_constants)) {                    \
+      __imp__sub_##addr(ctx, base);                                    \
+      return;                                                          \
+    }                                                                  \
     const uint32_t device =                                            \
         eot::mem::readable(ctx.r3.u32 + 48, 4) ? ctx.r3.u32 : 0u;      \
     const uint32_t before = device ? Ld32(device + 48) : 0;            \

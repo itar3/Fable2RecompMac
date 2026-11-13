@@ -57,6 +57,7 @@ struct PerfCounters {
   f64 guest_d3d_ms = 0;
   u32 guest_d3d_calls = 0;
   f64 capture_ms = 0, present_wait_ms = 0, worker_idle_ms = 0;
+  f64 game_thread_ms = 0;  // CPU time of the game's rendering thread (Present to Present)
   u32 index_cache_hits = 0, index_cache_misses = 0;
   u32 index_cache_evictions = 0;
   u32 vertex_cache_hits = 0, vertex_cache_misses = 0;
