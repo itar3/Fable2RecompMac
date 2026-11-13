@@ -22,14 +22,14 @@ for your disc's media ID). This repository and its download contain no game
 files, no recompiled game code and no game shaders: your copy is recompiled
 and translated on your Mac.
 
-## Status: 1.1
+## Status: 1.2
 
 The whole game is playable on Apple Silicon (tested on an M4 Pro, macOS 27):
 
 - Native renderer at the window's full Retina resolution (or a chosen
   full-screen resolution), with the game's 2x MSAA kept.
-- Stable 60 fps nearly everywhere with the 60 fps cap; the busiest Bowerstone
-  views dip to about 55-58 fps.
+- 60 fps nearly everywhere with the 60 fps cap, and more without it: busy
+  Bowerstone town averages about 65-75 fps uncapped (M4 Pro, 1.2).
 - **Fable 2.app**, a launcher: windowed or full screen, window size or
   resolution, render scale, frame rate cap, VSync, power saving, and
   **Install from ISO** that sets the game up from your disc image, finds the
@@ -42,6 +42,9 @@ The whole game is playable on Apple Silicon (tested on an M4 Pro, macOS 27):
 - Keyboard and mouse (1.1): WASD, mouse camera with adjustable sensitivity,
   mouse buttons for melee and ranged, and every key rebindable in the
   launcher (Key bindings…). A controller works alongside.
+- 1.2: faster (the game skips drawing what is hidden, as on the Xbox 360),
+  the villager "Set Nickname" freeze fixed (its text box now appears; type
+  on the Mac keyboard), and a 40 fps cap for 120 Hz screens.
 
 ## What you need
 
