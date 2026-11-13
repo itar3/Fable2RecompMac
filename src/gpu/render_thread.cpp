@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstring>
 #include <condition_variable>
@@ -37,6 +38,9 @@ REXCVAR_DECLARE(bool, fable2_zpass_restore_depth);
 // thread's next frame overlapped the render thread's end-of-frame work (frame
 // slot recycling, texture/buffer retirement, bookkeeping), which is not safe
 // against concurrent capture yet.
+REXCVAR_DEFINE_BOOL(fable2_render_spin, false, "Fable2",
+                    "Native renderer: the render thread spins while it waits for work (old behaviour) "
+                    "instead of sleeping in short steps");
 REXCVAR_DEFINE_BOOL(fable2_present_early_release, false, "Fable2",
                     "Native renderer: the game thread's Present returns once the frame is submitted, not "
                     "after the render thread's GPU fence wait (flickers: off)");
@@ -54,7 +58,10 @@ constexpr u64 kQueueSlots = 4096;
 constexpr u64 kQueueMask = kQueueSlots - 1;
 constexpr u64 kBatch = 64;
 constexpr u64 kPublishEvery = 8;
-constexpr u32 kIdleSpins = 4000;
+// Short spin before the render thread sleeps on the queue: longer spins kept a
+// core busy doing nothing for ~0.4 of the thread's time (energy, heat).
+constexpr u32 kIdleSpins = 200;
+constexpr u32 kIdleSpinsOld = 4000;
 constexpr u32 kSortWindow = 512;
 constexpr f64 kSortFillMs = 0.08;
 
@@ -91,6 +98,16 @@ void PublishTail(Queue &q) {
 Queue &queue() {
   static auto *q = new Queue;
   return *q;
+}
+
+// Waits that poll a condition (more draws to sort, the scene's depth resolve)
+// sleep in short steps instead of spinning: the render thread has slack, and a
+// spinning core costs power for nothing.
+void PollPause() {
+  if (REXCVAR_GET(fable2_render_spin))
+    eot::cpu::Relax();
+  else
+    std::this_thread::sleep_for(std::chrono::microseconds(25));
 }
 
 void PublishExecuted(Queue &q, u64 seq) {
@@ -150,7 +167,8 @@ void Execute(VideoState &s, Queue &q, RenderCommand &c) {
 }
 
 u64 WaitForWork(Queue &q, u64 head) {
-  for (u32 i = 0; i < kIdleSpins; ++i) {
+  const u32 spins = REXCVAR_GET(fable2_render_spin) ? kIdleSpinsOld : kIdleSpins;
+  for (u32 i = 0; i < spins; ++i) {
     const u64 t = q.tail.load(std::memory_order_acquire);
     if (t != head || q.stop.load(std::memory_order_relaxed))
       return t;
@@ -259,7 +277,7 @@ void DepthPrerun(VideoState &s, Queue &q, u64 head) {
     }
     if (q.stop.load(std::memory_order_relaxed))
       return;
-    eot::cpu::Relax();
+    PollPause();
   }
   if (!found) {
     if (failures++ % 200 < 4)
@@ -401,7 +419,7 @@ void WorkerMain() {
         }
         if (q.stop.load(std::memory_order_relaxed))
           break;
-        eot::cpu::Relax();
+        PollPause();
       }
     }
     EOT_CPU_ZONE("render batch");

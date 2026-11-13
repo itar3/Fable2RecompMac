@@ -11,7 +11,10 @@ then kills the game and puts the save folder back as it was before the run.
 Metrics come from the game log and the captured stdout/stderr: frame and GPU
 time ([perf]), pops and occlusion-query flickers ([pops]), the exposure
 readback ([writeback] min/max/avg: frozen = identical values), the hero coat
-composite ([writeback] hero average), device lost and crashes.
+composite ([writeback] hero average), device lost and crashes. Each window
+also reports energy use, sampled once a second: whole-Mac power draw (the
+battery controller's SystemLoad, watts; compare against an idle baseline), the
+GPU's busy percentage and the game's CPU use in cores.
 
   tools/smoke_test.py --label castle --runs 3 --route "A:5500:1500"
   tools/smoke_test.py --label base --args --fable2_query_force_visible=false
@@ -28,6 +31,7 @@ import signal
 import statistics
 import subprocess
 import sys
+import threading
 import time
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -42,6 +46,34 @@ TITLE_DRAWS = (60, 85)   # title screen: ~71 draws per frame
 MENU_DRAWS = 120         # main menu / save cards: ~155
 WORLD_DRAWS = 400        # in the world: 1000+
 # Scripted controller items (src/scripted_input.cpp): NAME:holdMs[:pauseMs].
+RE_SYSLOAD = re.compile(r'"SystemLoad"=(\d+)')
+RE_GPUBUSY = re.compile(r'"Device Utilization %"=(\d+)')
+
+
+class Sampler(threading.Thread):
+    """Once a second: (time, Mac power W, GPU busy %, game CPU cores)."""
+
+    def __init__(self, pid, t0):
+        super().__init__(daemon=True)
+        self.pid, self.t0, self.samples, self.done = pid, t0, [], threading.Event()
+
+    @staticmethod
+    def read(cmd, regex):
+        try:
+            m = regex.search(subprocess.run(cmd, capture_output=True, text=True, timeout=5).stdout)
+            return float(m[1]) if m else None
+        except (OSError, subprocess.SubprocessError):
+            return None
+
+    def run(self):
+        while not self.done.wait(1.0):
+            watts = self.read(["ioreg", "-rw0", "-c", "AppleSmartBattery"], RE_SYSLOAD)
+            gpu = self.read(["ioreg", "-r", "-d", "1", "-c", "IOAccelerator"], RE_GPUBUSY)
+            cpu = self.read(["ps", "-o", "%cpu=", "-p", str(self.pid)], re.compile(r"([\d.]+)"))
+            self.samples.append((time.monotonic() - self.t0, watts / 1000 if watts else None, gpu,
+                                 cpu / 100 if cpu is not None else None))
+
+
 def menu_keys(card):
     """Continue, then the card-th save card (1 = first)."""
     return ["LY-:120:600", "A:150:4000"] + ["LX+:150:900"] * (card - 1) + ["A:150:500"]
@@ -185,6 +217,8 @@ class Run:
         else:
             raise Abort("no new log file")
         self.log, self.stdio = Tail(self.log_path), Tail(self.stdio_path)
+        self.sampler = Sampler(self.proc.pid, self.t0)
+        self.sampler.start()
 
     def now(self):
         return time.monotonic() - self.t0
@@ -296,7 +330,11 @@ class Run:
         pops = [p for p in self.pops if start < p[0] <= end]
         med = lambda v: round(statistics.median(v), 2) if v else None
         mean = lambda v: round(statistics.fmean(v), 1) if v else None
+        energy = [x for x in self.sampler.samples if start + 1 < x[0] <= end] if hasattr(self, "sampler") else []
+        col = lambda i, digits: (round(statistics.fmean(v), digits) if (v := [x[i] for x in energy if x[i] is not None])
+                                 else None)
         self.windows[name] = {
+            "watts": col(1, 1), "gpu_busy": col(2, 0), "cpu_cores": col(3, 2),
             "frame_ms": med([p[1] for p in perf]), "gpu_ms": med([p[3] for p in perf]),
             "draws": med([p[2] for p in perf]), "pops_s": mean([p[1] for p in pops]),
             "flickers_s": mean([p[2] for p in pops]), "query_zero_pct": mean([p[3] for p in pops]),
@@ -386,6 +424,8 @@ class Run:
         self.mark("done")
 
     def stop(self):
+        if getattr(self, "sampler", None):
+            self.sampler.done.set()
         if getattr(self, "proc", None) and self.proc.poll() is None:
             self.proc.send_signal(signal.SIGTERM)
             try:
@@ -434,7 +474,9 @@ def one_line(i, s):
         v = w.get(name)
         if not v:
             return ""
-        return " %s %s/%sms d%s pops %s flk %s" % (name, v["frame_ms"], v["gpu_ms"], v["draws"], v["pops_s"], v["flickers_s"])
+        return " %s %s/%sms d%s pops %s flk %s %sW gpu%s%% cpu%s" % (
+            name, v["frame_ms"], v["gpu_ms"], v["draws"], v["pops_s"], v["flickers_s"],
+            v.get("watts"), v.get("gpu_busy"), v.get("cpu_cores"))
     expo = " ".join("%s:%s(run%s)" % (va[-4:], e["last_avg"], e["max_identical_run"]) for va, e in s["exposure"].items())
     status = "LOST@%s" % s["lost"][1] if s["lost"] else ("ERR " + s["error"] if s["error"] else "ok")
     return "run%d %s |%s%s%s%s | expo %s%s | dog %s | view %s / %s | nofetch %s nolayout %s mismatch %s reused %s | %s%s" % (
