@@ -65,7 +65,7 @@ extern uint32_t g_passTraceDraws;
 extern uint32_t g_passTraceClears;
 }
 REXCVAR_DEFINE_INT32(fable2_debug_present_spin_us, 0, "Fable2", "Debug: busy-wait this long on the game's rendering thread at each Present");
-REXCVAR_DEFINE_BOOL(fable2_present_pipelined, false, "Fable2",
+REXCVAR_DEFINE_BOOL(fable2_present_pipelined, true, "Fable2",
                     "Native renderer: the game's rendering thread may start its next frame while the render "
                     "thread finishes this one (Present waits for the previous frame's present only)");
 REXCVAR_DEFINE_BOOL(fable2_barrier_keeps_pass, true, "Fable2",
