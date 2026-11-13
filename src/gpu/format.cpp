@@ -38,7 +38,7 @@ plume::RenderFormat ConvertColorRenderTargetFormat(u32 f) {
     // 32 bits like the console's 7e3 (RGBA16F doubled the load/store traffic
     // of the 2x MSAA scene); its 2-bit alpha is written but never read back.
     if (REXCVAR_GET(fable2_7e3_32bit))
-      return F::B10G11R11_UFLOAT_PACK32;
+      return F::R11G11B10_FLOAT;
     return F::R16G16B16A16_FLOAT;
   case xe::ColorRenderTargetFormat::k_16_16_16_16:
   case xe::ColorRenderTargetFormat::k_16_16_16_16_FLOAT:
