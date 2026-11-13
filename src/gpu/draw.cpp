@@ -68,6 +68,8 @@ REXCVAR_DEFINE_BOOL(fable2_debug_depth_always, false, "Fable2", "Debug: depth te
 REXCVAR_DEFINE_BOOL(fable2_debug_cull_none, false, "Fable2", "Debug: no face culling");
 REXCVAR_DEFINE_BOOL(fable2_pop_counter, false, "Fable2", "Diagnostic: count objects that vanish for 1-3 frames ([pops]; the smoke test turns it on)");
 REXCVAR_DEFINE_BOOL(fable2_pull_preswap, false, "Fable2", "Native renderer: vertex-pulled 8-in-32 data is byte-swapped on the CPU while copied (the shader skips it)");
+REXCVAR_DEFINE_BOOL(fable2_diag_morph, false, "Fable2",
+                    "Diagnostic: count rewrites of morph streams (hashes every such stream per draw)");
 REXCVAR_DEFINE_BOOL(fable2_pool_spare, true, "Fable2", "Native renderer: geometry cache pools make their next chunk ahead on a background thread");
 REXCVAR_DEFINE_BOOL(fable2_pull_mirrors, true, "Fable2", "Native renderer: vertex-pulled stream buffers come from the mirror cache instead of a copy per draw");
 REXCVAR_DEFINE_BOOL(fable2_debug_skip_256_draws, false, "Fable2", "Debug: skip colour draws into 256-pixel-wide targets (cost test)");
@@ -3467,7 +3469,7 @@ bool CaptureDraw(VideoState &s, u32 device_va, u32 prim, GeometryPlan &geom,
       return false;
     }
     const bool morph = (layout->morphStreams >> S) & 1u;
-    if (morph)
+    if (morph && REXCVAR_GET(fable2_diag_morph))
       NoteMorphStream(s, st_info, first, bytes);
     if (const VertexMirror *mirror = morph ? nullptr : GetVertexMirror(s, st_info, first, bytes)) {
       auto &pool = vertex_mirrors().pool;
