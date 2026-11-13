@@ -691,6 +691,16 @@ extension Installer {
       // Code generation reads assets/game/default.xex next to the manifest.
       try fm.createSymbolicLink(atPath: workspace.appendingPathComponent("source/assets").path,
                                 withDestinationPath: "../assets")
+      // The unpacked files keep their commit dates, which can be older than the previous
+      // version's build outputs: the build would then skip changed files, or stop at the
+      // precompiled header ("has been modified since the precompiled header"). Build this
+      // version from scratch; the game's logs and translated shaders stay (the shader
+      // cache drops entries from another translator by itself).
+      if let items = try? fm.contentsOfDirectory(at: paths.gameDir, includingPropertiesForKeys: nil) {
+        for item in items where !["logs", "shader_runtime", "shader_runtime_cb"].contains(item.lastPathComponent) {
+          try? fm.removeItem(at: item)
+        }
+      }
       try? fm.removeItem(at: buildStamp)
       try version.write(to: stamp, atomically: true, encoding: .utf8)
     } catch {
