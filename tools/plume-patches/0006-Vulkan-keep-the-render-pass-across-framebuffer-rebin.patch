@@ -1,0 +1,121 @@
+From 53cd0d327427cbb06605f5d653466b91f60400f9 Mon Sep 17 00:00:00 2001
+From: itar3 <62651854+itar3@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 15:01:04 +0500
+Subject: [PATCH 6/7] Vulkan: keep the render pass across framebuffer rebinds
+
+setFramebuffer ended the active render pass every time, so rebinding the
+active framebuffer, or binding one that got no draws before switching
+back, ended and restarted the pass: a store and reload of every
+attachment on tile GPUs (MoltenVK, mobile).
+
+Now a draw or clear ends the pass only when it needs another framebuffer.
+setFramebuffer(nullptr) still ends it, and dispatch, traceRays, resolves
+and acceleration structure builds end it themselves (they relied on
+setFramebuffer ending it before).
+---
+ plume_vulkan.cpp | 22 ++++++++++++++++++++--
+ plume_vulkan.h   |  2 ++
+ 2 files changed, 22 insertions(+), 2 deletions(-)
+
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+index 25564c6..e3e19db 100644
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -3035,6 +3035,7 @@ namespace plume {
+ 
+     void VulkanCommandList::dispatch(uint32_t threadGroupCountX, uint32_t threadGroupCountY, uint32_t threadGroupCountZ) {
+         assert(activeComputePipelineLayout != nullptr);
++        endActiveRenderPass();
+ 
+         vkCmdDispatch(vk, threadGroupCountX, threadGroupCountY, threadGroupCountZ);
+     }
+@@ -3044,6 +3045,7 @@ namespace plume {
+         assert(interfaceBuffer != nullptr);
+         assert((interfaceBuffer->desc.flags & RenderBufferFlag::SHADER_BINDING_TABLE) && "Buffer must allow being used as a shader binding table.");
+         assert(activeRaytracingPipelineLayout != nullptr);
++        endActiveRenderPass();
+ 
+         VkBufferDeviceAddressInfo tableAddressInfo = {};
+         tableAddressInfo.sType = VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO;
+@@ -3270,7 +3272,14 @@ namespace plume {
+     }
+ 
+     void VulkanCommandList::setFramebuffer(const RenderFramebuffer *framebuffer) {
+-        endActiveRenderPass();
++        // The active render pass ends when a draw or clear needs another framebuffer
++        // (checkActiveRenderPass) or a command that is not allowed in a render pass comes.
++        // Rebinding the active framebuffer, or binding one that gets no draws before
++        // switching back, no longer ends and restarts the pass (a store and reload of
++        // every attachment on tile GPUs).
++        if (framebuffer == nullptr) {
++            endActiveRenderPass();
++        }
+ 
+         if (framebuffer != nullptr) {
+             const VulkanFramebuffer *interfaceFramebuffer = static_cast<const VulkanFramebuffer *>(framebuffer);
+@@ -3504,6 +3513,7 @@ namespace plume {
+         assert(dstTexture != nullptr);
+         assert(srcTexture != nullptr);
+         assert(resolveMode == RenderResolveMode::AVERAGE && "Vulkan only supports AVERAGE resolve mode.");
++        endActiveRenderPass();
+ 
+         thread_local std::vector<VkImageResolve> imageResolves;
+         imageResolves.clear();
+@@ -3549,6 +3559,7 @@ namespace plume {
+     void VulkanCommandList::buildBottomLevelAS(const RenderAccelerationStructure *dstAccelerationStructure, RenderBufferReference scratchBuffer, const RenderBottomLevelASBuildInfo &buildInfo) {
+         assert(dstAccelerationStructure != nullptr);
+         assert(scratchBuffer.ref != nullptr);
++        endActiveRenderPass();
+ 
+         const VulkanAccelerationStructure *interfaceAccelerationStructure = static_cast<const VulkanAccelerationStructure *>(dstAccelerationStructure);
+         assert(interfaceAccelerationStructure->type == RenderAccelerationStructureType::BOTTOM_LEVEL);
+@@ -3583,6 +3594,7 @@ namespace plume {
+     void VulkanCommandList::buildTopLevelAS(const RenderAccelerationStructure *dstAccelerationStructure, RenderBufferReference scratchBuffer, RenderBufferReference instancesBuffer, const RenderTopLevelASBuildInfo &buildInfo) {
+         assert(dstAccelerationStructure != nullptr);
+         assert(scratchBuffer.ref != nullptr);
++        endActiveRenderPass();
+         assert(instancesBuffer.ref != nullptr);
+ 
+         const VulkanAccelerationStructure *interfaceAccelerationStructure = static_cast<const VulkanAccelerationStructure *>(dstAccelerationStructure);
+@@ -3691,7 +3703,11 @@ namespace plume {
+ 
+     void VulkanCommandList::checkActiveRenderPass() {
+         assert(targetFramebuffer != nullptr);
+-        
++
++        if ((activeRenderPass != VK_NULL_HANDLE) && (activeFramebuffer != targetFramebuffer)) {
++            endActiveRenderPass();
++        }
++
+         if (activeRenderPass == VK_NULL_HANDLE) {
+             VkRenderPassBeginInfo beginInfo = {};
+             beginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+@@ -3701,6 +3717,7 @@ namespace plume {
+             beginInfo.renderArea.extent.height = targetFramebuffer->height;
+             vkCmdBeginRenderPass(vk, &beginInfo, VkSubpassContents::VK_SUBPASS_CONTENTS_INLINE);
+             activeRenderPass = targetFramebuffer->renderPass;
++            activeFramebuffer = targetFramebuffer;
+         }
+     }
+ 
+@@ -3714,6 +3731,7 @@ namespace plume {
+             passQueries.clear();
+             vkCmdEndRenderPass(vk);
+             activeRenderPass = VK_NULL_HANDLE;
++            activeFramebuffer = nullptr;
+         }
+     }
+ 
+diff --git a/plume_vulkan.h b/plume_vulkan.h
+index 45b9e93..11a3a89 100644
+--- a/plume_vulkan.h
++++ b/plume_vulkan.h
+@@ -324,6 +324,8 @@ namespace plume {
+         std::vector<PassQuery> passQueriesClosed;
+         // true: begin and end every query outside render passes (ends the active pass).
+         bool queriesEndRenderPass = false;
++        // The framebuffer of the active render pass instance.
++        const VulkanFramebuffer *activeFramebuffer = nullptr;
+ 
+         VulkanCommandList(VulkanCommandQueue *queue);
+         ~VulkanCommandList() override;

@@ -268,12 +268,18 @@ GPU time per draw).
 
 ## Native renderer debugging workflow (2026-11-04)
 
-Submodule edits live as patch files the build applies automatically at CMake configure time
-(cmake/native_renderer.cmake): `tools/xenosrecomp-patches/0001-Fable-2-repeated-vertex-fetch-usages-unknown-VS-expo.patch`
-(the whole XenosRecomp diff, on a031503) and `tools/plume-patches/0001-Fable-2-plume-framebuffers-queries-blend-constants-render-passes.patch` (the whole plume diff, on de0f70f; the old 0001 + 0002 were folded into it on 2026-11-05).
-After changing XenosRecomp or plume, regenerate its single patch from `git -C thirdparty/<name> diff`.
-Each patch must be "already applied" (reverse check) on the final tree or the configure stops, so
-never stack a new patch whose lines touch another patch's hunks: regenerate the existing one instead.
+Submodule edits live as patch series the build applies at CMake configure time
+(cmake/native_renderer.cmake, `fable2_apply_patch_series`): `tools/xenosrecomp-patches/` (one patch,
+the whole XenosRecomp diff) and `tools/plume-patches/`. Since 2026-11-13 plume's is a series:
+0001-0006 are self-contained, game-agnostic commits prepared as pull requests for zolaware/plume
+(formats, root descriptors, dynamic blend constants/stencil reference, mip-level framebuffer size,
+occlusion queries, render pass kept across framebuffer rebinds) and 0007 holds the renderer-specific
+rest (lazy clears, the MoltenVK barrier shortcut, pass statistics). The renderer opts in to the
+dynamic blend constant and stencil reference in `CreateHostGraphicsPipeline`.
+A series is checked as a whole (applied to a scratch copy of the index and compared with the working
+tree), so its patches may overlap; a tree with an older patch set is reset to the submodule commit
+and patched again. To change one: `git am` the series onto a plume clone at the submodule commit,
+edit or add commits, then regenerate with `git format-patch --no-signature -o tools/plume-patches <base>..`.
 
 Everything below runs against the live game (launched from `out/build/mac-arm64-native`); trigger
 files are picked up every 30 frames, next to the executable.

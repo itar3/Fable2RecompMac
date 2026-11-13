@@ -4,40 +4,48 @@
 
 set(FABLE2_THIRDPARTY "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty")
 
-# reeot-XenosRecomp with the Fable 2 patches (tools/xenosrecomp-patches),
-# applied once to the submodule's working tree.
-file(GLOB _fable2_xr_patches "${CMAKE_CURRENT_SOURCE_DIR}/tools/xenosrecomp-patches/*.patch")
-foreach(_patch IN LISTS _fable2_xr_patches)
-    execute_process(
-        COMMAND git -C "${FABLE2_THIRDPARTY}/XenosRecomp" apply --reverse --check "${_patch}"
-        RESULT_VARIABLE _already_applied OUTPUT_QUIET ERROR_QUIET)
-    if(NOT _already_applied EQUAL 0)
-        execute_process(
-            COMMAND git -C "${FABLE2_THIRDPARTY}/XenosRecomp" apply "${_patch}"
-            RESULT_VARIABLE _applied)
-        if(NOT _applied EQUAL 0)
-            message(FATAL_ERROR "Could not apply ${_patch} to thirdparty/XenosRecomp")
-        endif()
-        message(STATUS "fable2: applied ${_patch}")
+# Applies the patch series in PATCH_DIR (*.patch, in name order) to the
+# working tree of the submodule thirdparty/NAME, unless it is applied already.
+# A series cannot be checked patch by patch (later patches change the context
+# of earlier ones), so the check applies it to a scratch copy of the index and
+# compares that with the working tree. A tree with something else applied
+# (an older patch set) is reset to the submodule commit first.
+function(fable2_apply_patch_series NAME PATCH_DIR)
+    set(_dir "${FABLE2_THIRDPARTY}/${NAME}")
+    file(GLOB _patches "${PATCH_DIR}/*.patch")
+    list(SORT _patches)
+    if(NOT _patches)
+        return()
     endif()
-endforeach()
+    set(_index "${CMAKE_BINARY_DIR}/fable2-${NAME}-patches.index")
+    file(REMOVE "${_index}")
+    set(_git ${CMAKE_COMMAND} -E env "GIT_INDEX_FILE=${_index}" git -C "${_dir}")
+    execute_process(COMMAND ${_git} read-tree HEAD RESULT_VARIABLE _r1 OUTPUT_QUIET ERROR_QUIET)
+    execute_process(COMMAND ${_git} apply --cached ${_patches} RESULT_VARIABLE _r2 OUTPUT_QUIET ERROR_QUIET)
+    execute_process(COMMAND ${_git} diff --quiet RESULT_VARIABLE _r3 OUTPUT_QUIET ERROR_QUIET)
+    file(REMOVE "${_index}")
+    if(_r1 EQUAL 0 AND _r2 EQUAL 0 AND _r3 EQUAL 0)
+        return()
+    endif()
+    execute_process(COMMAND git -C "${_dir}" diff --quiet HEAD RESULT_VARIABLE _clean OUTPUT_QUIET ERROR_QUIET)
+    if(NOT _clean EQUAL 0)
+        message(STATUS "fable2: thirdparty/${NAME} has other changes applied: resetting it to the submodule commit")
+        execute_process(COMMAND git -C "${_dir}" checkout -- . RESULT_VARIABLE _reset)
+        if(NOT _reset EQUAL 0)
+            message(FATAL_ERROR "Could not reset thirdparty/${NAME}")
+        endif()
+    endif()
+    execute_process(COMMAND git -C "${_dir}" apply ${_patches} RESULT_VARIABLE _applied)
+    if(NOT _applied EQUAL 0)
+        message(FATAL_ERROR "Could not apply the patches in ${PATCH_DIR} to thirdparty/${NAME}")
+    endif()
+    list(LENGTH _patches _count)
+    message(STATUS "fable2: applied ${_count} patches to thirdparty/${NAME}")
+endfunction()
 
-# plume with the Fable 2 patches (tools/plume-patches).
-file(GLOB _fable2_plume_patches "${CMAKE_CURRENT_SOURCE_DIR}/tools/plume-patches/*.patch")
-foreach(_patch IN LISTS _fable2_plume_patches)
-    execute_process(
-        COMMAND git -C "${FABLE2_THIRDPARTY}/plume" apply --reverse --check "${_patch}"
-        RESULT_VARIABLE _already_applied OUTPUT_QUIET ERROR_QUIET)
-    if(NOT _already_applied EQUAL 0)
-        execute_process(
-            COMMAND git -C "${FABLE2_THIRDPARTY}/plume" apply "${_patch}"
-            RESULT_VARIABLE _applied)
-        if(NOT _applied EQUAL 0)
-            message(FATAL_ERROR "Could not apply ${_patch} to thirdparty/plume")
-        endif()
-        message(STATUS "fable2: applied ${_patch}")
-    endif()
-endforeach()
+# reeot-XenosRecomp and plume with the Fable 2 patches.
+fable2_apply_patch_series(XenosRecomp "${CMAKE_CURRENT_SOURCE_DIR}/tools/xenosrecomp-patches")
+fable2_apply_patch_series(plume "${CMAKE_CURRENT_SOURCE_DIR}/tools/plume-patches")
 
 set(PLUME_D3D12_AGILITY_SDK_ENABLED OFF CACHE BOOL "" FORCE)
 add_subdirectory("${FABLE2_THIRDPARTY}/plume" "${CMAKE_BINARY_DIR}/plume" EXCLUDE_FROM_ALL)

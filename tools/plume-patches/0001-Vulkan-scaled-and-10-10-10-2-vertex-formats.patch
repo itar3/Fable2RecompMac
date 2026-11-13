@@ -1,0 +1,117 @@
+From 3cae001f71c0b80d0aeeb516cd620ee5558b9aa7 Mon Sep 17 00:00:00 2001
+From: itar3 <62651854+itar3@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 14:55:54 +0500
+Subject: [PATCH 1/7] Vulkan: scaled and 10:10:10:2 vertex formats
+
+Adds R8, R8G8 and R8G8B8A8 USCALED/SSCALED, R16 USCALED/SSCALED,
+R16G16_USCALED, R16G16B16A16_USCALED (completing the SSCALED ones already
+there) and A2B10G10R10 UNORM/SNORM packed formats, with their Vulkan
+mappings and size tables. USCALED/SSCALED read unnormalized integers as
+floats, which vertex data from consoles often needs.
+---
+ plume_render_interface_types.h | 42 ++++++++++++++++++++++++++++++++++
+ plume_vulkan.cpp               | 24 +++++++++++++++++++
+ 2 files changed, 66 insertions(+)
+
+diff --git a/plume_render_interface_types.h b/plume_render_interface_types.h
+index 916698f..6a5531d 100644
+--- a/plume_render_interface_types.h
++++ b/plume_render_interface_types.h
+@@ -164,6 +164,19 @@ namespace plume {
+         D24_UNORM_S8_UINT,
+         R16G16_SSCALED,
+         R16G16B16A16_SSCALED,
++        // Vertex formats: USCALED/SSCALED are unnormalized integers read as floats.
++        R16G16B16A16_USCALED,
++        R8G8B8A8_USCALED,
++        R8G8B8A8_SSCALED,
++        R16G16_USCALED,
++        R8G8_USCALED,
++        R8G8_SSCALED,
++        R16_USCALED,
++        R16_SSCALED,
++        R8_USCALED,
++        R8_SSCALED,
++        A2B10G10R10_UNORM_PACK32,
++        A2B10G10R10_SNORM_PACK32,
+         MAX
+     };
+ 
+@@ -607,6 +620,22 @@ namespace plume {
+         case RenderFormat::BC7_UNORM:
+         case RenderFormat::BC7_UNORM_SRGB:
+             return 16;
++        case RenderFormat::R16G16B16A16_USCALED:
++            return 8;
++        case RenderFormat::A2B10G10R10_UNORM_PACK32:
++        case RenderFormat::A2B10G10R10_SNORM_PACK32:
++        case RenderFormat::R8G8B8A8_USCALED:
++        case RenderFormat::R8G8B8A8_SSCALED:
++        case RenderFormat::R16G16_USCALED:
++            return 4;
++        case RenderFormat::R8G8_USCALED:
++        case RenderFormat::R8G8_SSCALED:
++        case RenderFormat::R16_USCALED:
++        case RenderFormat::R16_SSCALED:
++            return 2;
++        case RenderFormat::R8_USCALED:
++        case RenderFormat::R8_SSCALED:
++            return 1;
+         default:
+             assert(false && "Unknown format.");
+             return 1;
+@@ -695,6 +724,19 @@ namespace plume {
+         case RenderFormat::BC7_UNORM:
+         case RenderFormat::BC7_UNORM_SRGB:
+             return 4;
++        case RenderFormat::R16G16B16A16_USCALED:
++        case RenderFormat::R8G8B8A8_USCALED:
++        case RenderFormat::R8G8B8A8_SSCALED:
++        case RenderFormat::R16G16_USCALED:
++        case RenderFormat::R8G8_USCALED:
++        case RenderFormat::R8G8_SSCALED:
++        case RenderFormat::R16_USCALED:
++        case RenderFormat::R16_SSCALED:
++        case RenderFormat::R8_USCALED:
++        case RenderFormat::R8_SSCALED:
++        case RenderFormat::A2B10G10R10_UNORM_PACK32:
++        case RenderFormat::A2B10G10R10_SNORM_PACK32:
++            return 1;
+         default:
+             assert(false && "Unknown format.");
+             return 1;
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+index fceae75..f61e438 100644
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -261,6 +261,30 @@ namespace plume {
+             return VK_FORMAT_BC7_UNORM_BLOCK;
+         case RenderFormat::BC7_UNORM_SRGB:
+             return VK_FORMAT_BC7_SRGB_BLOCK;
++        case RenderFormat::R16G16B16A16_USCALED:
++            return VK_FORMAT_R16G16B16A16_USCALED;
++        case RenderFormat::R8G8B8A8_USCALED:
++            return VK_FORMAT_R8G8B8A8_USCALED;
++        case RenderFormat::R8G8B8A8_SSCALED:
++            return VK_FORMAT_R8G8B8A8_SSCALED;
++        case RenderFormat::R16G16_USCALED:
++            return VK_FORMAT_R16G16_USCALED;
++        case RenderFormat::R8G8_USCALED:
++            return VK_FORMAT_R8G8_USCALED;
++        case RenderFormat::R8G8_SSCALED:
++            return VK_FORMAT_R8G8_SSCALED;
++        case RenderFormat::R16_USCALED:
++            return VK_FORMAT_R16_USCALED;
++        case RenderFormat::R16_SSCALED:
++            return VK_FORMAT_R16_SSCALED;
++        case RenderFormat::R8_USCALED:
++            return VK_FORMAT_R8_USCALED;
++        case RenderFormat::R8_SSCALED:
++            return VK_FORMAT_R8_SSCALED;
++        case RenderFormat::A2B10G10R10_UNORM_PACK32:
++            return VK_FORMAT_A2B10G10R10_UNORM_PACK32;
++        case RenderFormat::A2B10G10R10_SNORM_PACK32:
++            return VK_FORMAT_A2B10G10R10_SNORM_PACK32;
+         default:
+             assert(false && "Unknown format.");
+             return VK_FORMAT_UNDEFINED;

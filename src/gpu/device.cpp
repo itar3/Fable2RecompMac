@@ -854,7 +854,12 @@ CreateHostGraphicsPipeline(plume::RenderDevice *device,
                            const plume::RenderGraphicsPipelineDesc &desc, const char *tag) {
   if (!device)
     return nullptr;
-  auto pipeline = device->createGraphicsPipeline(desc);
+  // The blend constant and stencil reference are set per draw (draw.cpp):
+  // static values would need a pipeline per value.
+  plume::RenderGraphicsPipelineDesc dynamic_desc = desc;
+  dynamic_desc.dynamicBlendConstantsEnabled = true;
+  dynamic_desc.dynamicStencilReferenceEnabled = true;
+  auto pipeline = device->createGraphicsPipeline(dynamic_desc);
   if (!pipeline
 #if defined(EOT_D3D12)
       || static_cast<plume::D3D12GraphicsPipeline *>(pipeline.get())->d3d == nullptr

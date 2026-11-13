@@ -1,0 +1,245 @@
+From e0c6a2639e73aafd5836a8054ebde1191fb37b9b Mon Sep 17 00:00:00 2001
+From: itar3 <62651854+itar3@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 14:59:45 +0500
+Subject: [PATCH 5/7] Vulkan: occlusion queries
+
+Adds RenderDevice::createOcclusionQueryPool, RenderCommandList::beginQuery
+and endQuery, and RenderQueryPool::getRawResults (results without waiting,
+false while any is unavailable). Other backends return no pool for now.
+
+Queries are precise (sample counts) when the device supports it; MoltenVK
+otherwise uses Metal's boolean visibility mode. A query begun inside a
+render pass instance stays in it instead of ending the pass (a store and
+reload of every attachment on tile GPUs) and ends with the pass at the
+latest, as Vulkan requires; queriesEndRenderPass restores begin/end outside
+passes. resetQueryPool now ends the active pass (vkCmdResetQueryPool is not
+allowed inside one).
+---
+ plume_render_interface.h |  8 +++++
+ plume_vulkan.cpp         | 64 ++++++++++++++++++++++++++++++++++++++--
+ plume_vulkan.h           | 18 ++++++++++-
+ 3 files changed, 87 insertions(+), 3 deletions(-)
+
+diff --git a/plume_render_interface.h b/plume_render_interface.h
+index 05d10b2..51d7969 100644
+--- a/plume_render_interface.h
++++ b/plume_render_interface.h
+@@ -155,6 +155,10 @@ namespace plume {
+         virtual void discardTexture(const RenderTexture* texture) = 0; // D3D12 only.
+         virtual void resetQueryPool(const RenderQueryPool *queryPool, uint32_t queryFirstIndex, uint32_t queryCount) = 0;
+         virtual void writeTimestamp(const RenderQueryPool *queryPool, uint32_t queryIndex) = 0;
++        // Occlusion queries (samples that pass the depth and stencil tests) in a pool from
++        // RenderDevice::createOcclusionQueryPool.
++        virtual void beginQuery(const RenderQueryPool *queryPool, uint32_t queryIndex) { (void)queryPool; (void)queryIndex; }
++        virtual void endQuery(const RenderQueryPool *queryPool, uint32_t queryIndex) { (void)queryPool; (void)queryIndex; }
+ 
+         // Concrete implementation shortcuts.
+         inline void barriers(RenderBarrierStages stages, const RenderBufferBarrier &barrier) {
+@@ -226,6 +230,8 @@ namespace plume {
+         virtual void queryResults() = 0;
+         virtual const uint64_t *getResults() const = 0;
+         virtual uint32_t getCount() const = 0;
++        // Results of queries [first, first + count) without waiting; false if any is not available yet.
++        virtual bool getRawResults(uint32_t first, uint32_t count, uint64_t *out) { (void)first; (void)count; (void)out; return false; }
+     };
+ 
+     struct RenderDevice {
+@@ -246,6 +252,8 @@ namespace plume {
+         virtual std::unique_ptr<RenderCommandSemaphore> createCommandSemaphore() = 0;
+         virtual std::unique_ptr<RenderFramebuffer> createFramebuffer(const RenderFramebufferDesc &desc) = 0;
+         virtual std::unique_ptr<RenderQueryPool> createQueryPool(uint32_t queryCount) = 0;
++        // nullptr if the backend has no occlusion queries (only Vulkan has them so far).
++        virtual std::unique_ptr<RenderQueryPool> createOcclusionQueryPool(uint32_t queryCount) { (void)queryCount; return nullptr; }
+         virtual void setBottomLevelASBuildInfo(RenderBottomLevelASBuildInfo &buildInfo, const RenderBottomLevelASMesh *meshes, uint32_t meshCount, bool preferFastBuild = true, bool preferFastTrace = false) = 0;
+         virtual void setTopLevelASBuildInfo(RenderTopLevelASBuildInfo &buildInfo, const RenderTopLevelASInstance *instances, uint32_t instanceCount, bool preferFastBuild = true, bool preferFastTrace = false) = 0;
+         virtual void setShaderBindingTableInfo(RenderShaderBindingTableInfo &tableInfo, const RenderShaderBindingGroups &groups, const RenderPipeline *pipeline, RenderDescriptorSet **descriptorSets, uint32_t descriptorSetCount) = 0;
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+index 2852705..25564c6 100644
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -2820,7 +2820,7 @@ namespace plume {
+ 
+     // VulkanQueryPool
+ 
+-    VulkanQueryPool::VulkanQueryPool(VulkanDevice *device, uint32_t queryCount) {
++    VulkanQueryPool::VulkanQueryPool(VulkanDevice *device, uint32_t queryCount, bool occlusion) {
+         assert(device != nullptr);
+         assert(queryCount > 0);
+ 
+@@ -2828,7 +2828,7 @@ namespace plume {
+ 
+         VkQueryPoolCreateInfo createInfo = {};
+         createInfo.sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO;
+-        createInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
++        createInfo.queryType = occlusion ? VK_QUERY_TYPE_OCCLUSION : VK_QUERY_TYPE_TIMESTAMP;
+         createInfo.queryCount = queryCount;
+         
+         VkResult res = vkCreateQueryPool(device->vk, &createInfo, nullptr, &vk);
+@@ -2884,6 +2884,11 @@ namespace plume {
+         }
+     }
+ 
++    bool VulkanQueryPool::getRawResults(uint32_t first, uint32_t count, uint64_t *out) {
++        VkResult res = vkGetQueryPoolResults(device->vk, vk, first, count, sizeof(uint64_t) * count, out, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
++        return res == VK_SUCCESS;
++    }
++
+     const uint64_t *VulkanQueryPool::getResults() const {
+         return results.data();
+     }
+@@ -2935,6 +2940,8 @@ namespace plume {
+ 
+     void VulkanCommandList::begin() {
+         vkResetCommandBuffer(vk, 0);
++        passQueries.clear();
++        passQueriesClosed.clear();
+ 
+         VkCommandBufferBeginInfo beginInfo = {};
+         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+@@ -3629,6 +3636,9 @@ namespace plume {
+     void VulkanCommandList::resetQueryPool(const RenderQueryPool *queryPool, uint32_t queryFirstIndex, uint32_t queryCount) {
+         assert(queryPool != nullptr);
+ 
++        // vkCmdResetQueryPool is not allowed inside a render pass instance.
++        endActiveRenderPass();
++
+         const VulkanQueryPool *interfaceQueryPool = static_cast<const VulkanQueryPool *>(queryPool);
+         vkCmdResetQueryPool(vk, interfaceQueryPool->vk, queryFirstIndex, queryCount);
+     }
+@@ -3640,6 +3650,45 @@ namespace plume {
+         vkCmdWriteTimestamp(vk, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, interfaceQueryPool->vk, queryIndex);
+     }
+ 
++    // A query begun inside a render pass instance is kept in it (no load and store of its attachments
++    // around the query) and ends with it at the latest; one begun outside spans the passes in between.
++    void VulkanCommandList::beginQuery(const RenderQueryPool *queryPool, uint32_t queryIndex) {
++        assert(queryPool != nullptr);
++        const VkQueryPool pool = static_cast<const VulkanQueryPool *>(queryPool)->vk;
++        if (queriesEndRenderPass) {
++            endActiveRenderPass();
++        }
++
++        // Precise: sample counts, not just "any passed" (MoltenVK otherwise uses Metal's boolean mode).
++        vkCmdBeginQuery(vk, pool, queryIndex, queue->device->occlusionQueryPrecise ? VK_QUERY_CONTROL_PRECISE_BIT : 0);
++        if (activeRenderPass != VK_NULL_HANDLE) {
++            passQueries.push_back({ pool, queryIndex });
++        }
++    }
++
++    void VulkanCommandList::endQuery(const RenderQueryPool *queryPool, uint32_t queryIndex) {
++        assert(queryPool != nullptr);
++        const VkQueryPool pool = static_cast<const VulkanQueryPool *>(queryPool)->vk;
++        auto matches = [&](const PassQuery &q) { return (q.pool == pool) && (q.index == queryIndex); };
++        auto closed = std::find_if(passQueriesClosed.begin(), passQueriesClosed.end(), matches);
++        if (closed != passQueriesClosed.end()) {
++            // Its render pass ended first and closed it.
++            passQueriesClosed.erase(closed);
++            return;
++        }
++
++        auto open = std::find_if(passQueries.begin(), passQueries.end(), matches);
++        if (open != passQueries.end()) {
++            passQueries.erase(open);
++        }
++        else {
++            // Begun outside a render pass: it must end outside one too.
++            endActiveRenderPass();
++        }
++
++        vkCmdEndQuery(vk, pool, queryIndex);
++    }
++
+     void VulkanCommandList::checkActiveRenderPass() {
+         assert(targetFramebuffer != nullptr);
+         
+@@ -3657,6 +3706,12 @@ namespace plume {
+ 
+     void VulkanCommandList::endActiveRenderPass() {
+         if (activeRenderPass != VK_NULL_HANDLE) {
++            for (const PassQuery &q : passQueries) {
++                vkCmdEndQuery(vk, q.pool, q.index);
++                passQueriesClosed.push_back(q);
++            }
++
++            passQueries.clear();
+             vkCmdEndRenderPass(vk);
+             activeRenderPass = VK_NULL_HANDLE;
+         }
+@@ -4074,6 +4129,7 @@ namespace plume {
+         deviceFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
+         deviceFeatures.pNext = featuresChain;
+         vkGetPhysicalDeviceFeatures2(physicalDevice, &deviceFeatures);
++        occlusionQueryPrecise = deviceFeatures.features.occlusionQueryPrecise == VK_TRUE;
+ 
+         // Check for properties.
+         if (rayTracingFound) {
+@@ -4407,6 +4463,10 @@ namespace plume {
+         return std::make_unique<VulkanQueryPool>(this, queryCount);
+     }
+ 
++    std::unique_ptr<RenderQueryPool> VulkanDevice::createOcclusionQueryPool(uint32_t queryCount) {
++        return std::make_unique<VulkanQueryPool>(this, queryCount, true);
++    }
++
+     void VulkanDevice::setBottomLevelASBuildInfo(RenderBottomLevelASBuildInfo &buildInfo, const RenderBottomLevelASMesh *meshes, uint32_t meshCount, bool preferFastBuild, bool preferFastTrace) {
+         assert(meshes != nullptr);
+         assert(meshCount > 0);
+diff --git a/plume_vulkan.h b/plume_vulkan.h
+index 290fd69..45b9e93 100644
+--- a/plume_vulkan.h
++++ b/plume_vulkan.h
+@@ -296,9 +296,10 @@ namespace plume {
+         std::vector<uint64_t> results;
+         VkQueryPool vk = VK_NULL_HANDLE;
+ 
+-        VulkanQueryPool(VulkanDevice *device, uint32_t queryCount);
++        VulkanQueryPool(VulkanDevice *device, uint32_t queryCount, bool occlusion = false);
+         virtual ~VulkanQueryPool() override;
+         virtual void queryResults() override;
++        bool getRawResults(uint32_t first, uint32_t count, uint64_t *out) override;
+         virtual const uint64_t *getResults() const override;
+         virtual uint32_t getCount() const override;
+     };
+@@ -312,6 +313,17 @@ namespace plume {
+         const VulkanPipelineLayout *activeGraphicsPipelineLayout = nullptr;
+         const VulkanPipelineLayout *activeRaytracingPipelineLayout = nullptr;
+         VkRenderPass activeRenderPass = VK_NULL_HANDLE;
++        // Occlusion queries begun inside the active render pass: they end with it at the latest (Vulkan
++        // requires a query begun in a render pass instance to end in it), and a later endQuery of one
++        // the pass end already closed does nothing.
++        struct PassQuery {
++            VkQueryPool pool = VK_NULL_HANDLE;
++            uint32_t index = 0;
++        };
++        std::vector<PassQuery> passQueries;
++        std::vector<PassQuery> passQueriesClosed;
++        // true: begin and end every query outside render passes (ends the active pass).
++        bool queriesEndRenderPass = false;
+ 
+         VulkanCommandList(VulkanCommandQueue *queue);
+         ~VulkanCommandList() override;
+@@ -355,6 +367,8 @@ namespace plume {
+         void discardTexture(const RenderTexture* texture) override;
+         void resetQueryPool(const RenderQueryPool *queryPool, uint32_t queryFirstIndex, uint32_t queryCount) override;
+         void writeTimestamp(const RenderQueryPool *queryPool, uint32_t queryIndex) override;
++        void beginQuery(const RenderQueryPool *queryPool, uint32_t queryIndex) override;
++        void endQuery(const RenderQueryPool *queryPool, uint32_t queryIndex) override;
+         void checkActiveRenderPass();
+         void endActiveRenderPass();
+         void setDescriptorSet(VkPipelineBindPoint bindPoint, const VulkanPipelineLayout *pipelineLayout, const RenderDescriptorSet *descriptorSet, uint32_t setIndex);
+@@ -426,6 +440,7 @@ namespace plume {
+         std::vector<VulkanQueueFamily> queueFamilies;
+         RenderDeviceCapabilities capabilities;
+         RenderDeviceDescription description;
++        bool occlusionQueryPrecise = false;
+         VkPhysicalDeviceRayTracingPipelinePropertiesKHR rtPipelineProperties = {};
+         VkPhysicalDeviceSampleLocationsPropertiesEXT sampleLocationProperties = {};
+         std::unique_ptr<RenderBuffer> nullBuffer;
+@@ -451,6 +466,7 @@ namespace plume {
+         std::unique_ptr<RenderCommandSemaphore> createCommandSemaphore() override;
+         std::unique_ptr<RenderFramebuffer> createFramebuffer(const RenderFramebufferDesc &desc) override;
+         std::unique_ptr<RenderQueryPool> createQueryPool(uint32_t queryCount) override;
++        std::unique_ptr<RenderQueryPool> createOcclusionQueryPool(uint32_t queryCount) override;
+         void setBottomLevelASBuildInfo(RenderBottomLevelASBuildInfo &buildInfo, const RenderBottomLevelASMesh *meshes, uint32_t meshCount, bool preferFastBuild, bool preferFastTrace) override;
+         void setTopLevelASBuildInfo(RenderTopLevelASBuildInfo &buildInfo, const RenderTopLevelASInstance *instances, uint32_t instanceCount, bool preferFastBuild, bool preferFastTrace) override;
+         void setShaderBindingTableInfo(RenderShaderBindingTableInfo &tableInfo, const RenderShaderBindingGroups &groups, const RenderPipeline *pipeline, RenderDescriptorSet **descriptorSets, uint32_t descriptorSetCount) override;

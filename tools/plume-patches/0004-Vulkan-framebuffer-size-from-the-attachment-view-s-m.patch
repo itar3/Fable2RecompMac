@@ -1,0 +1,47 @@
+From 4be5b63220eb6eb7f94e7d55e0553393baf87d66 Mon Sep 17 00:00:00 2001
+From: itar3 <62651854+itar3@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 14:59:11 +0500
+Subject: [PATCH 4/7] Vulkan: framebuffer size from the attachment view's mip
+ level
+
+A framebuffer whose attachment is a view of mip level N took the base
+level's size as its size and render area, larger than the attachment: on
+MoltenVK draws then wrote outside it (GPU page faults). The size is now
+the view's mip level size, for colour and depth-only framebuffers.
+---
+ plume_vulkan.cpp | 15 +++++++++++----
+ 1 file changed, 11 insertions(+), 4 deletions(-)
+
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+index 976c00f..2852705 100644
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -2676,8 +2676,13 @@ namespace plume {
+             imageViews.emplace_back(colorAttachmentImageView);
+ 
+             if (i == 0) {
+-                width = uint32_t(colorAttachment->desc.width);
+-                height = colorAttachment->desc.height;
++                // A view of one mip level renders at that level's size (the base
++                // size made MoltenVK write outside the attachment: GPU page faults).
++                uint32_t mip = 0;
++                if (desc.colorAttachmentViews && desc.colorAttachmentViews[i])
++                    mip = static_cast<const VulkanTextureView *>(desc.colorAttachmentViews[i])->desc.mipSlice;
++                width = std::max(1u, uint32_t(colorAttachment->desc.width) >> mip);
++                height = std::max(1u, uint32_t(colorAttachment->desc.height) >> mip);
+             }
+ 
+             VkAttachmentReference reference = {};
+@@ -2721,8 +2726,10 @@ namespace plume {
+             imageViews.emplace_back(depthAttachmentImageView);
+ 
+             if (desc.colorAttachmentsCount == 0) {
+-                width = uint32_t(depthAttachment->desc.width);
+-                height = depthAttachment->desc.height;
++                const uint32_t depthMip = desc.depthAttachmentView != nullptr
++                    ? static_cast<const VulkanTextureView *>(desc.depthAttachmentView)->desc.mipSlice : 0;
++                width = std::max(1u, uint32_t(depthAttachment->desc.width) >> depthMip);
++                height = std::max(1u, uint32_t(depthAttachment->desc.height) >> depthMip);
+             }
+ 
+             depthReference.attachment = uint32_t(attachments.size());

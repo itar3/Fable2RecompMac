@@ -1,0 +1,268 @@
+From 70ca5aa1605489b00aed6201aca18e278c479277 Mon Sep 17 00:00:00 2001
+From: itar3 <62651854+itar3@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 14:59:00 +0500
+Subject: [PATCH 3/7] Dynamic blend constants and stencil reference
+
+Adds RenderCommandList::setBlendConstants and setStencilReference, and
+RenderGraphicsPipelineDesc::dynamicBlendConstantsEnabled and
+dynamicStencilReferenceEnabled (both off by default, so existing pipelines
+behave as before).
+
+Vulkan: the flags enable VK_DYNAMIC_STATE_BLEND_CONSTANTS and
+VK_DYNAMIC_STATE_STENCIL_REFERENCE. D3D12: OMSetBlendFactor and
+OMSetStencilRef; binding a pipeline with a dynamic stencil reference no
+longer overwrites it. Metal: setBlendColor and setStencilReferenceValue
+through the dirty state.
+
+Without them, a renderer whose stencil reference or blend constant changes
+per draw needs a pipeline per value.
+---
+ plume_d3d12.cpp                | 14 ++++++++++++++
+ plume_d3d12.h                  |  3 +++
+ plume_metal.cpp                | 24 +++++++++++++++++++++---
+ plume_metal.h                  |  9 ++++++++-
+ plume_render_interface.h       |  5 +++++
+ plume_render_interface_types.h |  2 ++
+ plume_vulkan.cpp               | 15 +++++++++++++++
+ plume_vulkan.h                 |  2 ++
+ 8 files changed, 70 insertions(+), 4 deletions(-)
+
+diff --git a/plume_d3d12.cpp b/plume_d3d12.cpp
+index 7b0ae61..642d7e6 100644
+--- a/plume_d3d12.cpp
++++ b/plume_d3d12.cpp
+@@ -2249,6 +2249,15 @@ namespace plume {
+         }
+     }
+ 
++    void D3D12CommandList::setBlendConstants(const float rgba[4]) {
++        d3d->OMSetBlendFactor(rgba);
++    }
++
++    void D3D12CommandList::setStencilReference(uint32_t reference) {
++        d3d->OMSetStencilRef(reference);
++        activeStencilRef = reference;
++    }
++
+     void D3D12CommandList::setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) {
+ #   ifdef PLUME_D3D12_AGILITY_SDK_ENABLED
+         assert(d3dV9 != nullptr);
+@@ -2476,6 +2485,10 @@ namespace plume {
+         assert(activeGraphicsPipeline->type == D3D12Pipeline::Type::Graphics);
+ 
+         const D3D12GraphicsPipeline *graphicsPipeline = static_cast<const D3D12GraphicsPipeline *>(activeGraphicsPipeline);
++        if (graphicsPipeline->dynamicStencilRef) {
++            return;
++        }
++
+         if (activeStencilRef != graphicsPipeline->stencilRef) {
+             d3d->OMSetStencilRef(graphicsPipeline->stencilRef);
+             activeStencilRef = graphicsPipeline->stencilRef;
+@@ -3090,6 +3103,7 @@ namespace plume {
+         assert(desc.pipelineLayout != nullptr);
+ 
+         topology = toD3D12(desc.primitiveTopology);
++        dynamicStencilRef = desc.dynamicStencilReferenceEnabled;
+ 
+         const D3D12PipelineLayout *pipelineLayout = static_cast<const D3D12PipelineLayout *>(desc.pipelineLayout);
+         const D3D12Shader *vertexShader = static_cast<const D3D12Shader *>(desc.vertexShader);
+diff --git a/plume_d3d12.h b/plume_d3d12.h
+index 4827452..8fcd174 100644
+--- a/plume_d3d12.h
++++ b/plume_d3d12.h
+@@ -211,6 +211,8 @@ namespace plume {
+         void setScissors(const RenderRect *scissorRects, uint32_t count) override;
+         void setFramebuffer(const RenderFramebuffer *framebuffer) override;
+         void setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) override;
++        void setBlendConstants(const float rgba[4]) override;
++        void setStencilReference(uint32_t reference) override;
+         void clearColor(uint32_t attachmentIndex, RenderColor colorValue, const RenderRect *clearRects, uint32_t clearRectsCount) override;
+         void clearDepthStencil(bool clearDepth, bool clearStencil, float depthValue, uint32_t stencilValue, const RenderRect *clearRects, uint32_t clearRectsCount) override;
+         void copyBufferRegion(RenderBufferReference dstBuffer, RenderBufferReference srcBuffer, uint64_t size) override;
+@@ -397,6 +399,7 @@ namespace plume {
+         std::vector<RenderInputSlot> inputSlots;
+         D3D12_PRIMITIVE_TOPOLOGY topology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
+         uint32_t stencilRef = 0;
++        bool dynamicStencilRef = false;
+ 
+         D3D12GraphicsPipeline(D3D12Device *device, const RenderGraphicsPipelineDesc &desc);
+         ~D3D12GraphicsPipeline() override;
+diff --git a/plume_metal.cpp b/plume_metal.cpp
+index f5f04aa..267fa69 100644
+--- a/plume_metal.cpp
++++ b/plume_metal.cpp
+@@ -1630,6 +1630,7 @@ namespace plume {
+         state.renderPipelineState = device->mtl->newRenderPipelineState(descriptor, &error);
+         state.primitiveType = mapPrimitiveType(desc.primitiveTopology);
+         state.stencilReference = desc.stencilEnabled ? desc.stencilReference : 0;
++        state.dynamicStencilReferenceEnabled = desc.dynamicStencilReferenceEnabled;
+ 
+         if (desc.dynamicDepthBiasEnabled) {
+             state.dynamicDepthBiasEnabled = true;
+@@ -2773,6 +2774,16 @@ namespace plume {
+         }
+     }
+ 
++    void MetalCommandList::setBlendConstants(const float rgba[4]) {
++        std::copy(rgba, rgba + 4, dynamicBlendConstants);
++        dirtyGraphicsState.blendConstants = 1;
++    }
++
++    void MetalCommandList::setStencilReference(uint32_t reference) {
++        dynamicStencilReference = reference;
++        dirtyGraphicsState.depthStencil = 1;
++    }
++
+     void MetalCommandList::setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) {
+         dynamicDepthBias.depthBias = depthBias;
+         dynamicDepthBias.depthBiasClamp = depthBiasClamp;
+@@ -3432,9 +3443,10 @@ namespace plume {
+                     activeRenderEncoder->setDepthStencilState(activeRenderState->depthStencilState);
+                     stateCache.lastDepthStencilState = activeRenderState->depthStencilState;
+                 }
+-                if (activeRenderState->stencilReference != stateCache.lastStencilReference) {
+-                    activeRenderEncoder->setStencilReferenceValue(activeRenderState->stencilReference);
+-                    stateCache.lastStencilReference = activeRenderState->stencilReference;
++                const uint32_t stencilReference = activeRenderState->dynamicStencilReferenceEnabled ? dynamicStencilReference : activeRenderState->stencilReference;
++                if (stencilReference != stateCache.lastStencilReference) {
++                    activeRenderEncoder->setStencilReferenceValue(stencilReference);
++                    stateCache.lastStencilReference = stencilReference;
+                 }
+             }
+             dirtyGraphicsState.depthStencil = 0;
+@@ -3463,6 +3475,12 @@ namespace plume {
+             dirtyGraphicsState.rasterizer = 0;
+         }
+ 
++        // Blend constants
++        if (dirtyGraphicsState.blendConstants) {
++            activeRenderEncoder->setBlendColor(dynamicBlendConstants[0], dynamicBlendConstants[1], dynamicBlendConstants[2], dynamicBlendConstants[3]);
++            dirtyGraphicsState.blendConstants = 0;
++        }
++
+         // Depth bias
+         if (dirtyGraphicsState.depthBias) {
+             float newDepthBias, newSlopeScale, newClamp;
+diff --git a/plume_metal.h b/plume_metal.h
+index 151495d..4e8dca2 100644
+--- a/plume_metal.h
++++ b/plume_metal.h
+@@ -118,6 +118,7 @@ namespace plume {
+                 uint32_t depthBias : 1;
+                 uint32_t depthStencil : 1;
+                 uint32_t rasterizer : 1;
++                uint32_t blendConstants : 1;
+             };
+             uint32_t value;
+         };
+@@ -129,7 +130,7 @@ namespace plume {
+         uint32_t vertexBufferSlots;
+ 
+         void setAll() {
+-            value = 0x1FF; // All 9 bits set
++            value = 0x3FF; // All 10 bits set
+             descriptorSetDirtyIndex = 0;
+             vertexBufferSlots = (1U << MAX_VERTEX_BUFFER_BINDINGS) - 1;
+         }
+@@ -198,6 +199,7 @@ namespace plume {
+         float depthBiasClamp;
+         float depthBiasSlopeFactor;
+         bool dynamicDepthBiasEnabled;
++        bool dynamicStencilReferenceEnabled = false;
+     };
+ 
+     struct ExtendedRenderTexture : RenderTexture {
+@@ -431,6 +433,9 @@ namespace plume {
+             float slopeScaledDepthBias;
+         } dynamicDepthBias;
+ 
++        uint32_t dynamicStencilReference = 0;
++        float dynamicBlendConstants[4] = {};
++
+         struct {
+             uint32_t updateDirtyBits = ~0;
+             int update[MetalBarrierStage::COUNT] = {};
+@@ -484,6 +489,8 @@ namespace plume {
+         void setScissors(const RenderRect *scissorRects, uint32_t count) override;
+         void setFramebuffer(const RenderFramebuffer *framebuffer) override;
+         void setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) override;
++        void setBlendConstants(const float rgba[4]) override;
++        void setStencilReference(uint32_t reference) override;
+         void clearColor(uint32_t attachmentIndex, RenderColor colorValue, const RenderRect *clearRects, uint32_t clearRectsCount) override;
+         void clearDepthStencil(bool clearDepth, bool clearStencil, float depthValue, uint32_t stencilValue, const RenderRect *clearRects, uint32_t clearRectsCount) override;
+         void copyBufferRegion(RenderBufferReference dstBuffer, RenderBufferReference srcBuffer, uint64_t size) override;
+diff --git a/plume_render_interface.h b/plume_render_interface.h
+index b755cd1..05d10b2 100644
+--- a/plume_render_interface.h
++++ b/plume_render_interface.h
+@@ -137,6 +137,11 @@ namespace plume {
+         virtual void setScissors(const RenderRect *scissorRects, uint32_t count) = 0;
+         virtual void setFramebuffer(const RenderFramebuffer *framebuffer) = 0;
+         virtual void setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) = 0;
++        // Blend constants (BLEND_FACTOR / INV_BLEND_FACTOR) for pipelines created with dynamicBlendConstantsEnabled.
++        virtual void setBlendConstants(const float rgba[4]) = 0;
++        // Stencil reference (front and back) for pipelines created with dynamicStencilReferenceEnabled.
++        // Like other dynamic state, set it again after binding a pipeline that has it static.
++        virtual void setStencilReference(uint32_t reference) = 0;
+         virtual void clearColor(uint32_t attachmentIndex = 0, RenderColor colorValue = RenderColor(), const RenderRect *clearRects = nullptr, uint32_t clearRectsCount = 0) = 0;
+         virtual void clearDepthStencil(bool clearDepth = true, bool clearStencil = true, float depthValue = 1.0f, uint32_t stencilValue = 0, const RenderRect *clearRects = nullptr, uint32_t clearRectsCount = 0) = 0;
+         virtual void copyBufferRegion(RenderBufferReference dstBuffer, RenderBufferReference srcBuffer, uint64_t size) = 0;
+diff --git a/plume_render_interface_types.h b/plume_render_interface_types.h
+index 6a5531d..06806d1 100644
+--- a/plume_render_interface_types.h
++++ b/plume_render_interface_types.h
+@@ -1343,6 +1343,8 @@ namespace plume {
+         float depthBiasClamp = 0.0f;
+         float slopeScaledDepthBias = 0.0f;
+         bool dynamicDepthBiasEnabled = false;
++        bool dynamicBlendConstantsEnabled = false; // Blend constants come from RenderCommandList::setBlendConstants.
++        bool dynamicStencilReferenceEnabled = false; // The stencil reference comes from RenderCommandList::setStencilReference.
+         bool depthEnabled = false;
+         bool depthWriteEnabled = false;
+         bool stencilEnabled = false;
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+index 4880504..976c00f 100644
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -1740,6 +1740,13 @@ namespace plume {
+         dynamicStates.clear();
+         dynamicStates.emplace_back(VK_DYNAMIC_STATE_VIEWPORT);
+         dynamicStates.emplace_back(VK_DYNAMIC_STATE_SCISSOR);
++        if (desc.dynamicBlendConstantsEnabled) {
++            dynamicStates.emplace_back(VK_DYNAMIC_STATE_BLEND_CONSTANTS);
++        }
++
++        if (desc.dynamicStencilReferenceEnabled) {
++            dynamicStates.emplace_back(VK_DYNAMIC_STATE_STENCIL_REFERENCE);
++        }
+ 
+         if (desc.dynamicDepthBiasEnabled) {
+             dynamicStates.emplace_back(VK_DYNAMIC_STATE_DEPTH_BIAS);
+@@ -3264,6 +3271,14 @@ namespace plume {
+         vkCmdSetDepthBias(vk, depthBias, depthBiasClamp, slopeScaledDepthBias);
+     }
+ 
++    void VulkanCommandList::setBlendConstants(const float rgba[4]) {
++        vkCmdSetBlendConstants(vk, rgba);
++    }
++
++    void VulkanCommandList::setStencilReference(uint32_t reference) {
++        vkCmdSetStencilReference(vk, VK_STENCIL_FACE_FRONT_AND_BACK, reference);
++    }
++
+     static void clearCommonRectVector(uint32_t width, uint32_t height, const RenderRect *clearRects, uint32_t clearRectsCount, std::vector<VkClearRect> &rectVector) {
+         rectVector.clear();
+ 
+diff --git a/plume_vulkan.h b/plume_vulkan.h
+index e772436..290fd69 100644
+--- a/plume_vulkan.h
++++ b/plume_vulkan.h
+@@ -340,6 +340,8 @@ namespace plume {
+         void setScissors(const RenderRect *scissorRects, uint32_t count) override;
+         void setFramebuffer(const RenderFramebuffer *framebuffer) override;
+         void setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) override;
++        void setBlendConstants(const float rgba[4]) override;
++        void setStencilReference(uint32_t reference) override;
+         void clearColor(uint32_t attachmentIndex, RenderColor colorValue, const RenderRect *clearRects, uint32_t clearRectsCount) override;
+         void clearDepthStencil(bool clearDepth, bool clearStencil, float depthValue, uint32_t stencilValue, const RenderRect *clearRects, uint32_t clearRectsCount) override;
+         void copyBufferRegion(RenderBufferReference dstBuffer, RenderBufferReference srcBuffer, uint64_t size) override;

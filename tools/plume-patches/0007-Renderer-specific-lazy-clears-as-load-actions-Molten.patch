@@ -1,0 +1,625 @@
+From 25c8e40905d98f056622044970dc6dc345e118fe Mon Sep 17 00:00:00 2001
+From: itar3 <62651854+itar3@users.noreply.github.com>
+Date: Fri, 13 Nov 2026 15:02:15 +0500
+Subject: [PATCH 7/7] Renderer-specific: lazy clears as load actions, MoltenVK
+ barrier shortcut, pass statistics
+
+Kept out of the upstream series: full clears are deferred and applied as
+the load action of the next pass that draws into the image (a pending list
+shared by the command lists, aged by lazyClearsEndFrame), texture barriers
+on MoltenVK skip ending the pass when no attachment of the active pass is
+involved (valid on Metal only), and pass statistics and a per-pass trace
+for diagnostics. g_lazyPassSwitch can turn the persistent render pass off.
+---
+ plume_vulkan.cpp | 401 +++++++++++++++++++++++++++++++++++++++++++++--
+ plume_vulkan.h   |  35 ++++-
+ 2 files changed, 418 insertions(+), 18 deletions(-)
+
+diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
+index e3e19db..133aa5b 100644
+--- a/plume_vulkan.cpp
++++ b/plume_vulkan.cpp
+@@ -8,6 +8,7 @@
+ #define VMA_IMPLEMENTATION
+ #define VOLK_IMPLEMENTATION 
+ 
++#include <atomic>
+ #include "plume_vulkan.h"
+ 
+ #include <algorithm>
+@@ -2662,6 +2663,7 @@ namespace plume {
+             VkImageView colorAttachmentImageView;
+             RenderFormat colorAttachmentFormat;
+             if (desc.colorAttachmentViews && desc.colorAttachmentViews[i]) {
++                usesViews = true;
+                 const VulkanTextureView* colorAttachmentView = static_cast<const VulkanTextureView *>(desc.colorAttachmentViews[i]);
+                 colorAttachment = colorAttachmentView->texture;
+                 colorAttachmentImageView = colorAttachmentView->vk;
+@@ -2716,6 +2718,8 @@ namespace plume {
+                 depthAttachmentViewDesc.format = depthAttachment->desc.format;
+                 depthAttachmentViewDesc.dimension = RenderTextureDimensionToView(depthAttachment->desc.dimension);
+             }
++            depthHasStencil = RenderFormatIsStencil(depthAttachmentViewDesc.format);
++            usesViews = usesViews || desc.depthAttachmentView != nullptr;
+             if (RenderFormatIsDepth(depthAttachmentViewDesc.format) && RenderFormatIsStencil(depthAttachmentViewDesc.format)) {
+                 // Base image view is configured for sampling depth. For framebuffer attachment,
+                 // create a separate view configured for both depth and stencil.
+@@ -2771,6 +2775,10 @@ namespace plume {
+             fprintf(stderr, "vkCreateRenderPass failed with error code 0x%X.\n", res);
+             return;
+         }
++        attachmentDescs = attachments;
++        colorRefs = colorReferences;
++        depthRef = depthReference;
++        hasDepth = subpass.pDepthStencilAttachment != nullptr;
+         
+         VkFramebufferCreateInfo fbInfo = {};
+         fbInfo.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+@@ -2793,11 +2801,65 @@ namespace plume {
+             vkDestroyFramebuffer(device->vk, vk, nullptr);
+         }
+ 
++        for (VkRenderPass pass : clearPasses) {
++            if (pass != VK_NULL_HANDLE) {
++                vkDestroyRenderPass(device->vk, pass, nullptr);
++            }
++        }
++
+         if (renderPass != VK_NULL_HANDLE) {
+             vkDestroyRenderPass(device->vk, renderPass, nullptr);
+         }
+     }
+ 
++    // Fable 2: this framebuffer's render pass with LOAD_OP_CLEAR for the
++    // attachments in mask (compatible with the framebuffer: only load ops differ).
++    VkRenderPass VulkanFramebuffer::clearPass(uint32_t mask) const {
++        mask &= 63;
++        if (mask == 0) {
++            return renderPass;
++        }
++        if (clearPasses[mask] != VK_NULL_HANDLE) {
++            return clearPasses[mask];
++        }
++
++        std::vector<VkAttachmentDescription> descs = attachmentDescs;
++        for (uint32_t i = 0; i < colorRefs.size() && i < 4; i++) {
++            if (mask & (1u << i)) {
++                descs[colorRefs[i].attachment].loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
++            }
++        }
++        if (hasDepth) {
++            VkAttachmentDescription &d = descs[depthRef.attachment];
++            if (mask & 16u) {
++                d.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
++            }
++            if ((mask & 32u) && depthHasStencil) {
++                d.stencilLoadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
++            }
++        }
++
++        VkSubpassDescription subpass = {};
++        subpass.pipelineBindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;
++        subpass.pColorAttachments = !colorRefs.empty() ? colorRefs.data() : nullptr;
++        subpass.colorAttachmentCount = uint32_t(colorRefs.size());
++        subpass.pDepthStencilAttachment = hasDepth ? &depthRef : nullptr;
++
++        VkRenderPassCreateInfo passInfo = {};
++        passInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
++        passInfo.pAttachments = descs.data();
++        passInfo.attachmentCount = uint32_t(descs.size());
++        passInfo.pSubpasses = &subpass;
++        passInfo.subpassCount = 1;
++
++        VkRenderPass pass = VK_NULL_HANDLE;
++        if (vkCreateRenderPass(device->vk, &passInfo, nullptr, &pass) != VK_SUCCESS) {
++            return renderPass;
++        }
++        clearPasses[mask] = pass;
++        return pass;
++    }
++
+     uint32_t VulkanFramebuffer::getWidth() const {
+         return width;
+     }
+@@ -2954,7 +3016,61 @@ namespace plume {
+         }
+     }
+ 
++    // Fable 2 render pass switches (set from the renderer's cvars).
++    std::atomic<bool> g_lazyPassSwitch{true};
++    std::atomic<bool> g_barrierKeepsPass{true};
++    std::atomic<bool> g_lazyClears{true};
++    std::vector<VulkanCommandList::PendingClear> VulkanCommandList::pendingClears;
++    bool VulkanCommandList::pendingWholeDepthClear(const RenderTexture *texture, float *depth, uint32_t *stencil) {
++        const PendingClear *found = nullptr;
++        for (const PendingClear &p : pendingClears) {
++            if (p.texture != texture)
++                continue;
++            if (found != nullptr)
++                return false;
++            found = &p;
++        }
++        if (found == nullptr || found->hasRect || !(found->aspects & VK_IMAGE_ASPECT_DEPTH_BIT))
++            return false;
++        const VulkanTexture *vt = static_cast<const VulkanTexture *>(texture);
++        if (RenderFormatIsStencil(vt->desc.format) && !(found->aspects & VK_IMAGE_ASPECT_STENCIL_BIT))
++            return false;
++        *depth = found->value.depthStencil.depth;
++        *stencil = found->value.depthStencil.stencil;
++        return true;
++    }
++
++    // Called by the renderer before the frame's last command list ends.
++    void VulkanCommandList::lazyClearsEndFrame() {
++        for (PendingClear &p : pendingClears)
++            p.age++;
++    }
++    std::atomic<uint64_t> g_clearsDeferred{0};   // full clears recorded as pending
++    std::atomic<uint64_t> g_clearsAtLoad{0};     // pending clears applied as a draw pass's load action
++    std::atomic<uint64_t> g_clearsFlushed{0};    // pending clears done the old way (something else touched the image)
++    // Fable 2: render pass statistics and a per-pass trace (diag frames).
++    std::atomic<uint64_t> g_passBegins{0};
++    std::atomic<uint64_t> g_bigPassBegins{0};
++    std::atomic<bool> g_passTrace{false};
++    void (*g_passTraceFn)(bool begin, uint32_t width, uint32_t height, uint32_t attachments, const void *caller) = nullptr;
++    // Trace details: the active pass's attachments and its draw/clear counts.
++    const void *g_passTraceImages[3] = {};
++    uint32_t g_passTraceDraws = 0;
++    uint32_t g_passTraceClears = 0;
++
+     void VulkanCommandList::end() {
++        // Clears pending since before the previous frame boundary are done
++        // now; younger ones wait for a later list (a frame has several when
++        // it submits for readbacks; the next pass on the image applies them).
++        for (auto it = pendingClears.begin(); it != pendingClears.end();) {
++            if (it->age >= 2 || !g_lazyClears.load(std::memory_order_relaxed)) {
++                const VulkanTexture *texture = it->texture;
++                flushPendingClears(texture);
++                it = pendingClears.begin();
++            } else {
++                ++it;
++            }
++        }
+         endActiveRenderPass();
+ 
+         VkResult res = vkEndCommandBuffer(vk);
+@@ -2977,6 +3093,47 @@ namespace plume {
+             return;
+         }
+ 
++        if (!pendingClears.empty()) {
++            // Into an attachment layout: the image is about to be drawn into,
++            // and the pass begin applies its clear; other layouts read it.
++            for (uint32_t i = 0; i < textureBarriersCount; i++) {
++                if (textureBarriers[i].texture == nullptr)
++                    continue;
++                const RenderTextureLayout layout = textureBarriers[i].layout;
++                if (layout != RenderTextureLayout::COLOR_WRITE && layout != RenderTextureLayout::DEPTH_WRITE) {
++                    const VulkanTexture *tex = static_cast<const VulkanTexture *>(textureBarriers[i].texture);
++                    if (g_passTrace.load(std::memory_order_relaxed) && g_passTraceFn) {
++                        uint32_t n = 0, rects = 0;
++                        for (const PendingClear &p : pendingClears)
++                            if (p.texture == tex) { n++; rects += p.hasRect ? 1 : 0; }
++                        if (n)
++                            g_passTraceFn(false, n * 100 + rects, uint32_t(layout), 0xFFFE, tex);
++                    }
++                    flushPendingClears(tex);
++                }
++            }
++        }
++
++        if (activeRenderPass != VK_NULL_HANDLE && activeFramebuffer != nullptr && bufferBarriersCount == 0 &&
++            g_barrierKeepsPass.load(std::memory_order_relaxed)) {
++            // Fable 2 on MoltenVK: image layouts mean nothing to Metal, and Metal
++            // orders a texture's writes in earlier encoders before later reads.
++            // A transition of a texture that is not an attachment of the active
++            // pass only updates the recorded layout instead of ending the pass
++            // (a store and reload of every attachment on tile GPUs).
++            bool attached = false;
++            for (uint32_t i = 0; i < textureBarriersCount && !attached; i++) {
++                const VulkanTexture *t = static_cast<const VulkanTexture *>(textureBarriers[i].texture);
++                attached = t == activeFramebuffer->depthAttachment;
++                for (const VulkanTexture *c : activeFramebuffer->colorAttachments)
++                    attached = attached || t == c;
++            }
++            if (!attached) {
++                for (uint32_t i = 0; i < textureBarriersCount; i++)
++                    static_cast<VulkanTexture *>(textureBarriers[i].texture)->textureLayout = textureBarriers[i].layout;
++                return;
++            }
++        }
+         endActiveRenderPass();
+ 
+         const bool geometryEnabled = queue->device->capabilities.geometryShader;
+@@ -3077,14 +3234,16 @@ namespace plume {
+ 
+     void VulkanCommandList::drawInstanced(uint32_t vertexCountPerInstance, uint32_t instanceCount, uint32_t startVertexLocation, uint32_t startInstanceLocation) {
+         assert(activeGraphicsPipelineLayout != nullptr);
+-        checkActiveRenderPass();
++        checkActiveRenderPass(true);
++        g_passTraceDraws++;
+ 
+         vkCmdDraw(vk, vertexCountPerInstance, instanceCount, startVertexLocation, startInstanceLocation);
+     }
+     
+     void VulkanCommandList::drawIndexedInstanced(uint32_t indexCountPerInstance, uint32_t instanceCount, uint32_t startIndexLocation, int32_t baseVertexLocation, uint32_t startInstanceLocation) {
+         assert(activeGraphicsPipelineLayout != nullptr);
+-        checkActiveRenderPass();
++        checkActiveRenderPass(true);
++        g_passTraceDraws++;
+ 
+         vkCmdDrawIndexed(vk, indexCountPerInstance, instanceCount, startIndexLocation, baseVertexLocation, startInstanceLocation);
+     }
+@@ -3277,7 +3436,7 @@ namespace plume {
+         // Rebinding the active framebuffer, or binding one that gets no draws before
+         // switching back, no longer ends and restarts the pass (a store and reload of
+         // every attachment on tile GPUs).
+-        if (framebuffer == nullptr) {
++        if (framebuffer == nullptr || !g_lazyPassSwitch.load(std::memory_order_relaxed)) {
+             endActiveRenderPass();
+         }
+ 
+@@ -3334,7 +3493,20 @@ namespace plume {
+         assert(attachmentIndex < targetFramebuffer->colorAttachments.size());
+         assert((clearRectsCount == 0) || (clearRects != nullptr));
+ 
++        if (clearRectsCount <= 1 && activeFramebuffer != targetFramebuffer) {
++            VkClearValue value = {};
++            value.color.float32[0] = colorValue.r;
++            value.color.float32[1] = colorValue.g;
++            value.color.float32[2] = colorValue.b;
++            value.color.float32[3] = colorValue.a;
++            if (deferClear(targetFramebuffer->colorAttachments[attachmentIndex], value, VK_IMAGE_ASPECT_COLOR_BIT,
++                           clearRectsCount ? clearRects : nullptr)) {
++                return;
++            }
++        }
++
+         checkActiveRenderPass();
++        g_passTraceClears++;
+ 
+         thread_local std::vector<VkClearRect> rectVector;
+         clearCommonRectVector(targetFramebuffer->getWidth(), targetFramebuffer->getHeight(), clearRects, clearRectsCount, rectVector);
+@@ -3354,7 +3526,20 @@ namespace plume {
+         assert(targetFramebuffer != nullptr);
+         assert((clearRectsCount == 0) || (clearRects != nullptr));
+ 
++        if (clearRectsCount <= 1 && activeFramebuffer != targetFramebuffer && targetFramebuffer->depthAttachment != nullptr &&
++            !targetFramebuffer->depthAttachmentReadOnly && (clearDepth || clearStencil)) {
++            VkClearValue value = {};
++            value.depthStencil.depth = depthValue;
++            value.depthStencil.stencil = stencilValue;
++            const VkImageAspectFlags aspects = (clearDepth ? VK_IMAGE_ASPECT_DEPTH_BIT : 0) |
++                                               (clearStencil && targetFramebuffer->depthHasStencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0);
++            if (aspects != 0 && deferClear(targetFramebuffer->depthAttachment, value, aspects, clearRectsCount ? clearRects : nullptr)) {
++                return;
++            }
++        }
++
+         checkActiveRenderPass();
++        g_passTraceClears++;
+ 
+         thread_local std::vector<VkClearRect> rectVector;
+         clearCommonRectVector(targetFramebuffer->getWidth(), targetFramebuffer->getHeight(), clearRects, clearRectsCount, rectVector);
+@@ -3389,6 +3574,11 @@ namespace plume {
+     }
+ 
+     void VulkanCommandList::copyTextureRegion(const RenderTextureCopyLocation &dstLocation, const RenderTextureCopyLocation &srcLocation, uint32_t dstX, uint32_t dstY, uint32_t dstZ, const RenderBox *srcBox) {
++        // (a buffer side has no texture: nullptr would flush every image)
++        if (!pendingClears.empty() && dstLocation.texture != nullptr)
++            flushPendingClears(static_cast<const VulkanTexture *>(dstLocation.texture));
++        if (!pendingClears.empty() && srcLocation.texture != nullptr)
++            flushPendingClears(static_cast<const VulkanTexture *>(srcLocation.texture));
+         endActiveRenderPass();
+         
+         assert(dstLocation.type != RenderTextureCopyType::UNKNOWN);
+@@ -3470,6 +3660,10 @@ namespace plume {
+     }
+ 
+     void VulkanCommandList::copyTexture(const RenderTexture *dstTexture, const RenderTexture *srcTexture) {
++        if (!pendingClears.empty() && dstTexture != nullptr)
++            flushPendingClears(static_cast<const VulkanTexture *>(dstTexture));
++        if (!pendingClears.empty() && srcTexture != nullptr)
++            flushPendingClears(static_cast<const VulkanTexture *>(srcTexture));
+         endActiveRenderPass();
+ 
+         assert(dstTexture != nullptr);
+@@ -3510,6 +3704,10 @@ namespace plume {
+     }
+ 
+     void VulkanCommandList::resolveTextureRegion(const RenderTexture *dstTexture, uint32_t dstX, uint32_t dstY, const RenderTexture *srcTexture, const RenderRect *srcRect, RenderResolveMode resolveMode) {
++        if (!pendingClears.empty() && dstTexture != nullptr)
++            flushPendingClears(static_cast<const VulkanTexture *>(dstTexture));
++        if (!pendingClears.empty() && srcTexture != nullptr)
++            flushPendingClears(static_cast<const VulkanTexture *>(srcTexture));
+         assert(dstTexture != nullptr);
+         assert(srcTexture != nullptr);
+         assert(resolveMode == RenderResolveMode::AVERAGE && "Vulkan only supports AVERAGE resolve mode.");
+@@ -3642,12 +3840,13 @@ namespace plume {
+     }
+ 
+     void VulkanCommandList::discardTexture(const RenderTexture* texture) {
++        for (auto it = pendingClears.begin(); it != pendingClears.end();)
++            it = it->texture == texture ? pendingClears.erase(it) : it + 1;
+         // Not required in Vulkan.
+     }
+ 
+     void VulkanCommandList::resetQueryPool(const RenderQueryPool *queryPool, uint32_t queryFirstIndex, uint32_t queryCount) {
+         assert(queryPool != nullptr);
+-
+         // vkCmdResetQueryPool is not allowed inside a render pass instance.
+         endActiveRenderPass();
+ 
+@@ -3701,28 +3900,196 @@ namespace plume {
+         vkCmdEndQuery(vk, pool, queryIndex);
+     }
+ 
+-    void VulkanCommandList::checkActiveRenderPass() {
++    // Fable 2: begins fb's pass (statistics and the diag trace included).
++    void VulkanCommandList::beginPass(const VulkanFramebuffer *fb, VkRenderPass pass, const VkClearValue *values, uint32_t valueCount) {
++        g_passTraceImages[0] = !fb->colorAttachments.empty() ? fb->colorAttachments[0] : nullptr;
++        g_passTraceImages[1] = fb->colorAttachments.size() > 1 ? fb->colorAttachments[1] : nullptr;
++        g_passTraceImages[2] = fb->depthAttachment;
++        // Traced before the begin: a diag timestamp written here lies between passes.
++        if (g_passTrace.load(std::memory_order_relaxed) && g_passTraceFn)
++            g_passTraceFn(true, fb->width, fb->height,
++                          uint32_t(fb->colorAttachments.size()) + (fb->depthAttachment ? 1u : 0u), nullptr);
++        VkRenderPassBeginInfo beginInfo = {};
++        beginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
++        beginInfo.renderPass = pass;
++        beginInfo.framebuffer = fb->vk;
++        beginInfo.renderArea.extent.width = fb->width;
++        beginInfo.renderArea.extent.height = fb->height;
++        beginInfo.clearValueCount = valueCount;
++        beginInfo.pClearValues = values;
++        vkCmdBeginRenderPass(vk, &beginInfo, VkSubpassContents::VK_SUBPASS_CONTENTS_INLINE);
++        activeRenderPass = pass;
++        activeFramebuffer = fb;
++        g_passBegins.fetch_add(1, std::memory_order_relaxed);
++        if (uint64_t(fb->width) * fb->height >= 2000000)
++            g_bigPassBegins.fetch_add(1, std::memory_order_relaxed);
++        g_passTraceDraws = 0;
++        g_passTraceClears = 0;
++    }
++
++    static int colorIndexOf(const VulkanFramebuffer *fb, const VulkanTexture *texture) {
++        for (size_t i = 0; i < fb->colorAttachments.size(); i++) {
++            if (fb->colorAttachments[i] == texture)
++                return int(i);
++        }
++        return -1;
++    }
++
++    // Fable 2 lazy clears: records a clear of texture (an attachment of
++    // targetFramebuffer; whole, or one rect) instead of doing it. False: do it now.
++    bool VulkanCommandList::deferClear(const VulkanTexture *texture, VkClearValue value, VkImageAspectFlags aspects, const RenderRect *rect) {
++        if (!g_lazyClears.load(std::memory_order_relaxed) || targetFramebuffer->usesViews || texture == nullptr)
++            return false;
++        // A pass drawing into this image through another framebuffer: end it, so
++        // its next draws come after the clear (the next pass begin applies it).
++        if (activeRenderPass != VK_NULL_HANDLE && activeFramebuffer != nullptr &&
++            (activeFramebuffer->depthAttachment == texture || colorIndexOf(activeFramebuffer, texture) >= 0)) {
++            endActiveRenderPass();
++        }
++        g_clearsDeferred.fetch_add(1, std::memory_order_relaxed);
++        PendingClear p = {};
++        p.texture = texture;
++        p.framebuffer = targetFramebuffer;
++        p.value = value;
++        p.aspects = aspects;
++        p.hasRect = rect != nullptr;
++        if (rect != nullptr) {
++            p.rect.offset.x = rect->left;
++            p.rect.offset.y = rect->top;
++            p.rect.extent.width = uint32_t(std::max(0, rect->right - rect->left));
++            p.rect.extent.height = uint32_t(std::max(0, rect->bottom - rect->top));
++        } else {
++            // A whole clear overwrites the earlier ones of the same aspects.
++            for (auto it = pendingClears.begin(); it != pendingClears.end();)
++                it = it->texture == texture && (it->aspects & ~aspects) == 0 ? pendingClears.erase(it) : it + 1;
++        }
++        pendingClears.push_back(p);
++        return true;
++    }
++
++    // Records p's clear in the active pass (it must have p's image attached).
++    bool VulkanCommandList::applyClearInPass(const PendingClear &p) {
++        const VulkanFramebuffer *fb = activeFramebuffer;
++        VkClearAttachment att = {};
++        att.clearValue = p.value;
++        if (p.aspects & VK_IMAGE_ASPECT_COLOR_BIT) {
++            const int index = colorIndexOf(fb, p.texture);
++            if (index < 0)
++                return false;
++            att.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
++            att.colorAttachment = uint32_t(index);
++        } else {
++            if (fb->depthAttachment != p.texture || fb->depthAttachmentReadOnly)
++                return false;
++            att.aspectMask = p.aspects & (fb->depthHasStencil ? (VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT)
++                                                              : VK_IMAGE_ASPECT_DEPTH_BIT);
++            if (att.aspectMask == 0)
++                return true;
++        }
++        VkClearRect rect = {};
++        if (p.hasRect) {
++            rect.rect = p.rect;
++        } else {
++            rect.rect.extent.width = fb->width;
++            rect.rect.extent.height = fb->height;
++        }
++        rect.layerCount = 1;
++        if (rect.rect.extent.width == 0 || rect.rect.extent.height == 0)
++            return true;
++        vkCmdClearAttachments(vk, 1, &att, 1, &rect);
++        g_passTraceClears++;
++        return true;
++    }
++
++    // Does the pending clears of texture (all if nullptr) the old way, in a
++    // LOAD pass of the framebuffer they were recorded with. (On MoltenVK a
++    // draw-less pass with a CLEAR load action left the image uncleared.)
++    __attribute__((noinline)) void VulkanCommandList::flushPendingClears(const VulkanTexture *texture) {
++        if (g_passTrace.load(std::memory_order_relaxed) && g_passTraceFn) {
++            bool any = false;
++            for (const PendingClear &p : pendingClears)
++                any = any || texture == nullptr || p.texture == texture;
++            if (any)
++                g_passTraceFn(false, 0, 0, 0xFFFF, __builtin_return_address(0));
++        }
++        for (auto it = pendingClears.begin(); it != pendingClears.end();) {
++            if (texture != nullptr && it->texture != texture) {
++                ++it;
++                continue;
++            }
++            const PendingClear p = *it;
++            pendingClears.erase(it);
++            if (activeFramebuffer != p.framebuffer) {
++                endActiveRenderPass();
++                beginPass(p.framebuffer, p.framebuffer->renderPass, nullptr, 0);
++            }
++            applyClearInPass(p);
++            g_clearsFlushed.fetch_add(1, std::memory_order_relaxed);
++            it = pendingClears.begin();
++        }
++        // The flush pass ends here unless it is the pass a draw is about to use.
++        if (activeFramebuffer != nullptr && activeFramebuffer != targetFramebuffer)
++            endActiveRenderPass();
++    }
++
++    void VulkanCommandList::checkActiveRenderPass(bool forDraw) {
+         assert(targetFramebuffer != nullptr);
+ 
+-        if ((activeRenderPass != VK_NULL_HANDLE) && (activeFramebuffer != targetFramebuffer)) {
++        if (activeRenderPass != VK_NULL_HANDLE && activeFramebuffer != targetFramebuffer) {
+             endActiveRenderPass();
+         }
++        if (activeRenderPass != VK_NULL_HANDLE)
++            return;
+ 
+-        if (activeRenderPass == VK_NULL_HANDLE) {
+-            VkRenderPassBeginInfo beginInfo = {};
+-            beginInfo.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+-            beginInfo.renderPass = targetFramebuffer->renderPass;
+-            beginInfo.framebuffer = targetFramebuffer->vk;
+-            beginInfo.renderArea.extent.width = targetFramebuffer->width;
+-            beginInfo.renderArea.extent.height = targetFramebuffer->height;
+-            vkCmdBeginRenderPass(vk, &beginInfo, VkSubpassContents::VK_SUBPASS_CONTENTS_INLINE);
+-            activeRenderPass = targetFramebuffer->renderPass;
+-            activeFramebuffer = targetFramebuffer;
++        // Pending clears of this framebuffer's images happen in this pass: an
++        // image's single whole clear becomes the load action when a draw begins
++        // the pass, the rest are recorded right after the begin.
++        const VulkanFramebuffer *fb = targetFramebuffer;
++        const uint32_t colorCount = std::min<uint32_t>(uint32_t(fb->colorAttachments.size()), 8u);
++        uint32_t mask = 0;
++        VkClearValue values[9] = {};
++        thread_local std::vector<PendingClear> inPass;
++        inPass.clear();
++        thread_local std::vector<const VulkanTexture *> pendingImages;
++        pendingImages.clear();
++        for (const PendingClear &q : pendingClears)
++            pendingImages.push_back(q.texture);
++        for (auto it = pendingClears.begin(); it != pendingClears.end();) {
++            const bool color = (it->aspects & VK_IMAGE_ASPECT_COLOR_BIT) != 0;
++            const int index = color ? colorIndexOf(fb, it->texture)
++                                    : (fb->depthAttachment == it->texture && !fb->depthAttachmentReadOnly ? int(colorCount) : -1);
++            if (index < 0) {
++                ++it;
++                continue;
++            }
++            const auto entries = std::count(pendingImages.begin(), pendingImages.end(), it->texture);
++            uint32_t bits = 0;
++            if (forDraw && !fb->usesViews && !it->hasRect && entries == 1) {
++                if (color) {
++                    bits = index < 4 ? 1u << index : 0u;
++                } else if (it->aspects & VK_IMAGE_ASPECT_DEPTH_BIT) {
++                    bits = 16u | ((it->aspects & VK_IMAGE_ASPECT_STENCIL_BIT) && fb->depthHasStencil ? 32u : 0u);
++                }
++            }
++            if (bits != 0) {
++                mask |= bits;
++                values[index] = it->value;
++                g_clearsAtLoad.fetch_add(1, std::memory_order_relaxed);
++            } else {
++                inPass.push_back(*it);
++            }
++            it = pendingClears.erase(it);
+         }
++        beginPass(fb, fb->clearPass(mask), mask ? values : nullptr,
++                  mask ? colorCount + (fb->hasDepth ? 1u : 0u) : 0u);
++        for (const PendingClear &p : inPass)
++            applyClearInPass(p);
+     }
+ 
+-    void VulkanCommandList::endActiveRenderPass() {
++    __attribute__((noinline)) void VulkanCommandList::endActiveRenderPass() {
+         if (activeRenderPass != VK_NULL_HANDLE) {
++            if (g_passTrace.load(std::memory_order_relaxed) && g_passTraceFn && activeFramebuffer)
++                g_passTraceFn(false, activeFramebuffer->width, activeFramebuffer->height, 0, __builtin_return_address(0));
+             for (const PassQuery &q : passQueries) {
+                 vkCmdEndQuery(vk, q.pool, q.index);
+                 passQueriesClosed.push_back(q);
+diff --git a/plume_vulkan.h b/plume_vulkan.h
+index 11a3a89..ad016c7 100644
+--- a/plume_vulkan.h
++++ b/plume_vulkan.h
+@@ -283,8 +283,18 @@ namespace plume {
+         bool depthAttachmentReadOnly = false;
+         uint32_t width = 0;
+         uint32_t height = 0;
++        // Fable 2: render pass variants with LOAD_OP_CLEAR (bit i: colour
++        // attachment i < 4, bit 4: depth, bit 5: stencil), made on first use.
++        std::vector<VkAttachmentDescription> attachmentDescs;
++        std::vector<VkAttachmentReference> colorRefs;
++        VkAttachmentReference depthRef = {};
++        bool hasDepth = false;
++        bool depthHasStencil = false;
++        bool usesViews = false;  // mip/slice views: clears are not per whole image
++        mutable VkRenderPass clearPasses[64] = {};
+ 
+         VulkanFramebuffer(VulkanDevice *device, const RenderFramebufferDesc &desc);
++        VkRenderPass clearPass(uint32_t mask) const;
+         ~VulkanFramebuffer() override;
+         uint32_t getWidth() const override;
+         uint32_t getHeight() const override;
+@@ -326,6 +336,25 @@ namespace plume {
+         bool queriesEndRenderPass = false;
+         // The framebuffer of the active render pass instance.
+         const VulkanFramebuffer *activeFramebuffer = nullptr;
++        // Fable 2 lazy clears: full clears of whole images, applied as the load
++        // action of the next pass that draws into the image, or done the old
++        // way when anything else touches it first.
++        struct PendingClear {
++            const VulkanTexture *texture;
++            const VulkanFramebuffer *framebuffer;  // where it was cleared
++            VkClearValue value;
++            VkImageAspectFlags aspects;
++            bool hasRect;
++            VkRect2D rect;
++            uint32_t age;  // command lists ended since it was recorded
++        };
++        // Shared by the command lists (one records at a time): clears recorded at
++        // the end of a frame carry into the next list on the same queue.
++        static std::vector<PendingClear> pendingClears;
++        static void lazyClearsEndFrame();
++        // Fable 2: true if texture's only pending clear is a whole clear of its
++        // depth (and stencil, if it has one); its values.
++        static bool pendingWholeDepthClear(const RenderTexture *texture, float *depth, uint32_t *stencil);
+ 
+         VulkanCommandList(VulkanCommandQueue *queue);
+         ~VulkanCommandList() override;
+@@ -371,8 +400,12 @@ namespace plume {
+         void writeTimestamp(const RenderQueryPool *queryPool, uint32_t queryIndex) override;
+         void beginQuery(const RenderQueryPool *queryPool, uint32_t queryIndex) override;
+         void endQuery(const RenderQueryPool *queryPool, uint32_t queryIndex) override;
+-        void checkActiveRenderPass();
++        void checkActiveRenderPass(bool forDraw = false);
+         void endActiveRenderPass();
++        void flushPendingClears(const VulkanTexture *texture);  // nullptr: all
++        void beginPass(const VulkanFramebuffer *fb, VkRenderPass pass, const VkClearValue *values, uint32_t valueCount);
++        bool deferClear(const VulkanTexture *texture, VkClearValue value, VkImageAspectFlags aspects, const RenderRect *rect);
++        bool applyClearInPass(const PendingClear &p);
+         void setDescriptorSet(VkPipelineBindPoint bindPoint, const VulkanPipelineLayout *pipelineLayout, const RenderDescriptorSet *descriptorSet, uint32_t setIndex);
+     };
+ 
