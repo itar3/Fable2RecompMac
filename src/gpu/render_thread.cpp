@@ -458,7 +458,14 @@ void WorkerMain() {
         Prefetch(q.slots[(head + 1) & kQueueMask]);
       if (c.type == RenderCommandType::Draw && DepthPrerunTrigger(c.draw))
         DepthPrerun(s, q, head);
+      s.next_resolve = nullptr;
+      if (c.type == RenderCommandType::Resolve && head + 1 < q.tail.load(std::memory_order_acquire)) {
+        const RenderCommand &next = q.slots[(head + 1) & kQueueMask];
+        if (next.type == RenderCommandType::Resolve)
+          s.next_resolve = &next.resolve;
+      }
       Execute(s, q, c);
+      s.next_resolve = nullptr;
       ++head;
       if ((head & (kPublishEvery - 1)) == 0 || i + 1 == n)
         PublishHead(q, head);

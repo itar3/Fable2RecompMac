@@ -295,6 +295,9 @@ static void ClearResolveDestination(VideoState &s, const ResolvePacket &pk) {
 }
 
 REXCVAR_DEFINE_BOOL(fable2_debug_skip_small_resolves, false, "Fable2", "Debug: skip 256x256 colour resolves (cost measurement)");
+REXCVAR_DEFINE_BOOL(fable2_merge_tile_clears, true, "Fable2",
+                    "Native renderer: predicated tiling's per-tile clears after its resolves become one whole "
+                    "clear at the last tile (a pass start's load action) instead of a pass per tile");
 REXCVAR_DEFINE_BOOL(fable2_diag_dead_resolves, false, "Fable2", "Diagnostic: resolves by kind, how many are never sampled");
 REXCVAR_DEFINE_BOOL(fable2_diag_resolve_copies, false, "Fable2", "Diagnostic: log which resolve copies move the most pixels");
 static void ReplayResolveImplLocked(VideoState &s, const ResolvePacket &pk);
@@ -973,6 +976,27 @@ static void ReplayResolveImplLocked(VideoState &s, const ResolvePacket &pk) {
   }
   const i32 resolved_rect[4] = {x0, y0, x1, y1};
   const i32 *clear_rect = whole_src ? nullptr : resolved_rect;
+  // Predicated tiling resolves and clears one horizontal band at a time. When
+  // the next queued command resolves and clears the band below with the same
+  // values, this band's clear waits and that one clears the whole surface
+  // (plume makes a whole clear the next pass's load action; nothing reads this
+  // band in between: the next resolve copies only its own band).
+  if (clear_rect && (flags & 0x300) && REXCVAR_GET(fable2_merge_tile_clears)) {
+    if (s.tile_clear_deferred_va == pk.srcVa) {
+      clear_rect = nullptr;
+    } else if (const ResolvePacket *n = s.next_resolve;
+               n && n->srcVa == pk.srcVa && (n->flags & 0x3FF) == (flags & 0x3FF) && n->hasRect && pk.hasRect &&
+               n->dsVa == pk.dsVa && n->hasColor == pk.hasColor && n->clearZ == pk.clearZ &&
+               (!pk.hasColor || std::memcmp(n->rgba, pk.rgba, sizeof(pk.rgba)) == 0) && x0 == 0 && y0 == 0 &&
+               x1 == static_cast<i32>(surf->width) && n->rect[0] <= 0 && n->rect[2] >= x1 && n->rect[1] == y1 &&
+               n->rect[3] >= static_cast<i32>(surf->height)) {
+      s.tile_clear_deferred_va = pk.srcVa;
+      s.bound_framebuffer = nullptr;
+      DrainHostDebugMessages(s, "resolve");
+      return;
+    }
+  }
+  s.tile_clear_deferred_va = 0;
   if (flags & 0x100)
     ClearSource(s, *surf, pk.hasColor ? pk.rgba : nullptr, clear_z, clear_rect);
   if ((flags & 0x200) && depth_source)

@@ -293,6 +293,11 @@ struct VideoState {
   std::atomic<bool> resize_requested{false};
 
   bool command_list_open = false;
+  // Predicated tiling resolves clear their tile of the source: while a resolve
+  // runs, the next queued command if it is a resolve too (render thread), and
+  // the source whose first tile clear was folded into the next tile's.
+  const struct ResolvePacket *next_resolve = nullptr;
+  u32 tile_clear_deferred_va = 0;
   bool command_list_submitted[kNumFrames] = {};
   // Chunked submits (fable2_chunk_submit_draws): command lists of a frame slot
   // submitted mid-frame (still on the GPU until the slot's fence) and spares.
