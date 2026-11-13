@@ -6,8 +6,9 @@ Fable II for Apple Silicon Macs, as a native app. **You need your own Fable II d
 - **Fixed: "Set Nickname" froze the game.** Choosing Set Nickname on a villager's card opened a text box that never appeared, and the game stopped responding. The box now shows: type the name on your Mac's keyboard and press Enter (or click OK). It can't be typed into with a controller yet. Other system messages the game shows now appear too.
 - **Less CPU use and heat.** The renderer now waits without keeping a processor core busy.
 - **40 fps cap** in the launcher, for 120 Hz screens: steady frame pacing with less power than 60.
+- **Reliable updates.** After an update the app builds the game from scratch, so the build can't trip over files from the previous version.
 
-Updating from 1.1: replace the app in Applications. On first start it unpacks its tools again and asks you to click **Build** once (a few minutes). Your game files and saves stay.
+Updating from 1.0 or 1.1: replace the app in Applications. On first start it unpacks its tools again and asks you to click **Build** once (a few minutes). Your game files and saves stay.
 
 ## Also in 1.1: keyboard and mouse
 
