@@ -528,6 +528,12 @@ so the scene was drawn and something late turned it black. Not the sun formula
 Next time: in that scene, `diag_now` for a per-draw frame, then cvar_now
 `fable2_query_force_visible=true` live (picture back = real counts). Parked by
 the user; real counts stay off by default until then.
+**2026-11-13: real counts are the default** (`fable2_query_force_visible=false`,
+`fable2_query_hold=2`). Queries no longer end render passes (a2c79cda), so
+culling is now a net win: town (card 9) 2504 -> 2230 draws, frame 15.7 -> 14.3 ms
+standing and 17.1 -> 15.1 ms panning, GPU up to -2.8 ms. The user played the
+prologue to Bowerstone: no popping or blinking, no black frames (the Old Town
+cutscene above included).
 
 **Full clears as render pass load actions: tried, no gain, reverted** (2026-11-06).
 plume held a full clear back until its framebuffer's pass began and began it

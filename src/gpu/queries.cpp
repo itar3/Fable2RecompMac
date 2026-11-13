@@ -42,7 +42,7 @@ REXCVAR_DEFINE_BOOL(fable2_query_binary, false, "Fable2",
                     "Native renderer: occlusion queries answer 0 (no host sample) or fully visible");
 REXCVAR_DEFINE_BOOL(fable2_query_stale_visible, true, "Fable2",
                     "Native renderer: an occlusion query whose latest count is not in yet reports fully visible");
-REXCVAR_DEFINE_INT32(fable2_query_hold, 1, "Fable2",
+REXCVAR_DEFINE_INT32(fable2_query_hold, 2, "Fable2",
                      "Native renderer: occlusion queries report the largest of their last N host counts (1-4)");
 REXCVAR_DEFINE_BOOL(fable2_query_skip_forced, true, "Fable2",
                     "Native renderer: no host occlusion query for tests reported fully visible anyway");

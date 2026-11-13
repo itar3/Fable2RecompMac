@@ -47,8 +47,11 @@ REXCVAR_DEFINE_BOOL(fable2_ring_wptr_direct, true, "Fable2",
 REXCVAR_DEFINE_BOOL(fable2_query_sun_counts, true, "Fable2",
                     "Native renderer: the sun glare's occlusion queries read real counts (also with "
                     "fable2_query_force_visible)");
-REXCVAR_DEFINE_BOOL(fable2_query_force_visible, true, "Fable2",
-                    "Native renderer: report every occlusion test as fully visible");
+// Off by default since 2026-11-13: with queries kept inside render passes,
+// real counts let the game skip hidden objects (town: -11% draws, frames
+// ~1.4-2 ms shorter); play-tested through the prologue without popping.
+REXCVAR_DEFINE_BOOL(fable2_query_force_visible, false, "Fable2",
+                    "Native renderer: report every occlusion test as fully visible (no occlusion culling)");
 REXCVAR_DEFINE_BOOL(fable2_query_visible, true, "Fable2",
                     "Native renderer: answer occlusion queries from host occlusion queries");
 
