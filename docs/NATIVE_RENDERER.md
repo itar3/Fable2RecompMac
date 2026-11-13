@@ -892,3 +892,53 @@ executable). `fable2_runtime_shaders=false` turns it off;
 missing (test). Verified on card 4 (the user's cave save) with the 7 cave
 shaders ignored: off -> 117 drops, black floor; on -> 7 translations in
 0.25-0.77 s each, floor drawn; second launch -> 7 loaded from disk, 0 drops.
+
+## 2026-11-13 evening: towards 100 fps in the Gypsy Camp (card 9)
+
+The user's target: at least 100 fps (10 ms) in the heaviest place on an M4
+Pro. Card 9 was re-saved in the Gypsy Camp (busier than Bowerstone: more NPCs).
+`[perf]` now reports the game's rendering thread CPU time per frame (`game`),
+and `tools/ab.py` averages it, so CPU-side changes show even when the GPU sets
+the frame time. `tools/gputime.py` gives real GPU utilisation (ioreg).
+
+**Where it stands** (pipelined Present on; standing still):
+- Full resolution: 18.2 ms a frame, GPU 98% busy: GPU-bound. GPU split: main
+  scene pass 7.8 ms, depth-only (shadow maps 2x, prepass, query boxes) 2.4-2.8,
+  resolves ~3-3.5, 8-bit targets ~2.8.
+- Half resolution: 16.1 ms with the GPU 74% busy and the game's rendering
+  thread at 12.7 ms of CPU: neither saturated. The rest is waiting between the
+  game's logic thread, its rendering thread, our render thread and the GPU.
+  Next wall after GPU savings: ~16 ms.
+
+**Done today**: pipelined Present with the upload ring per captured frame
+(town 14.4 -> 13.4 ms); skinning emulation decodes each bone row once (-0.3 ms
+CPU); ring constant writer hooks skip their memory query and packet walk
+unless mirroring (-0.45 ms game thread CPU); morph stream statistics only with
+`fable2_diag_morph`.
+
+**Measured and dropped** (in-session A/B unless noted):
+- Reusing pulled-buffer copies within a frame: the Gypsy Camp pulls two 64 KB
+  stream-2 buffers ~600 times a frame (instancing: element = (vertex + c255.x)
+  * k; 37 MB of copies), changed by a few bytes between some uses. Comparing the
+  bytes costs as much as copying (no gain); page write watches
+  (EnablePhysicalMemoryAccessCallbacks) fault 180-400 times a frame (16 KB host
+  pages). The real fix is copying only the slice a draw reads: the translator
+  would have to give the index formula's range (~0.8 ms CPU).
+- Skipping the scene's depth prepass: -0.16 ms GPU only (depth-only is cheap
+  on Apple GPUs); not worth its correctness risks.
+- `fable2_zero_mul` off: -1.4 ms, but as found on 2026-11-06 that is geometry
+  lost to NaNs, not a lever.
+- 3 upload ring slots: occlusion query counts flickered while standing still
+  (cause not found); 2 are kept and suffice for pipelining.
+- Control flow: only 10 vertex shaders still use the loop/switch state machine.
+
+**Options that change the picture** (user's decision): shadow maps at 1x (the
+Xbox's 1024, now 2x): -1.3 ms (-0.9 panning), mostly their resolve copies;
+temporal upscaling (TAA reconstructing to full resolution from ~70-75%): the
+TAA keeps its history at scene size today, so this is new work.
+
+**Large projects that remain**: plume's Metal backend instead of MoltenVK
+(memoryless MSAA attachments and explicit load/store: the main pass's fixed
+MSAA load/store cost); moving capture work off the game's rendering thread
+(our render thread idles ~4 ms a frame); hand-off instead of copies for the
+2048x2048 shadow maps (blocked before by per-frame texture objects).
