@@ -65,6 +65,9 @@ extern uint32_t g_passTraceDraws;
 extern uint32_t g_passTraceClears;
 }
 REXCVAR_DEFINE_INT32(fable2_debug_present_spin_us, 0, "Fable2", "Debug: busy-wait this long on the game's rendering thread at each Present");
+REXCVAR_DEFINE_BOOL(fable2_present_pipelined, false, "Fable2",
+                    "Native renderer: the game's rendering thread may start its next frame while the render "
+                    "thread finishes this one (Present waits for the previous frame's present only)");
 REXCVAR_DEFINE_BOOL(fable2_barrier_keeps_pass, true, "Fable2",
                     "Native renderer (MoltenVK): layout changes of textures not attached to the render pass keep the pass");
 REXCVAR_DEFINE_BOOL(fable2_diag_pass_timing, false, "Fable2",
@@ -900,6 +903,7 @@ REXCVAR_DEFINE_BOOL(fable2_present_guest_memory, false, "Fable2",
                     "Debug: present the front buffer from guest memory (videos written by the CPU)");
 
 void PresentLocked(VideoState &s, u32 front_buffer_texture_va) {
+  UploadRingFramePresented();
   EOT_CPU_ZONE("PresentLocked");
   taa::EndFrame(s);
   velocity::EndFrame(s);
@@ -1154,12 +1158,23 @@ void Video::Present(u32 front_buffer_texture_va) {
         seq = enqueue.commit();
       }
       PerfScope wait_scope(s.perf.present_wait_ms);
-      RenderThreadWait(seq);
+      // Pipelined: wait for the previous frame's present, so the game's
+      // rendering thread works on its next frame while the render thread
+      // finishes this one (the upload ring is safe for it: frame_ring.cpp).
+      // Bowerstone town, in-session A/B: 14.39 -> 13.43 ms a frame.
+      static u64 previous_present = 0;
+      const u64 wait_for = REXCVAR_GET(fable2_present_pipelined) ? previous_present : seq;
+      previous_present = seq;
+      if (wait_for)
+        RenderThreadWait(wait_for);
     } else {
       std::lock_guard lock(s.mutex);
       PresentLocked(s, front_buffer_texture_va);
       Fable2GpuCaptureOnPresent();
     }
+    // The next frame's uploads go to its own ring slot, once the GPU is done
+    // with that slot's previous frame.
+    UploadRingNextCapturedFrame();
   }
   FrameLimitWait(s);
   EOT_FRAME_MARK();

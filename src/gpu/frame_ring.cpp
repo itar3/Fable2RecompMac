@@ -9,6 +9,8 @@
 #include <cstring>
 #include <memory>
 #include <mutex>
+#include <chrono>
+#include <condition_variable>
 #include <format>
 #include <vector>
 
@@ -320,6 +322,7 @@ void FlushRetiredLocked(VideoState &s) {
 }
 
 void AdvanceAndWaitReused(VideoState &s) {
+  UploadRingSlotSubmitted(s.frame.load(std::memory_order_relaxed));
   const u32 slot = s.next_frame;
   s.frame.store(slot, std::memory_order_relaxed);
   s.frame_chunks = 0;
@@ -328,6 +331,7 @@ void AdvanceAndWaitReused(VideoState &s) {
   if (s.command_list_submitted[slot]) {
     s.queue->waitForCommandFence(s.fences[slot].get());
     s.command_list_submitted[slot] = false;
+    UploadRingSlotFinished(slot);
     // The slot's chunks ran before its fenced submit.
     for (auto &l : s.chunk_inflight[slot])
       s.chunk_spare[slot].push_back(std::move(l));
@@ -339,6 +343,9 @@ void AdvanceAndWaitReused(VideoState &s) {
       TracyD3D12Collect(ctx);
     }
 #endif
+  } else if (s.chunk_inflight[slot].empty()) {
+    // Nothing of this slot's frames is on the GPU (no submit, no chunks).
+    UploadRingSlotFinished(slot);
   }
   // Fable 2: the bindless texture set is shared by both frames in flight.
   // Textures released while this slot's frame was recorded were still in the
@@ -368,7 +375,7 @@ void AdvanceAndWaitReused(VideoState &s) {
   for (auto &t : s.texture_graveyard[slot])
     s.texture_deferred.push_back(std::move(t));
   s.texture_graveyard[slot].clear();
-  UploadRingResetFrame(slot);
+  UploadRingParkExcess(s);
 }
 
 void ParkTexture(VideoState &s, std::unique_ptr<plume::RenderTexture> t) {
@@ -549,6 +556,15 @@ namespace eot::gpu {
 namespace {
 
 constexpr u64 kChunkSize = 32ull * 1024 * 1024;
+// The ring belongs to the frames as the game's thread captures them, not to the
+// render thread's command list slots: frame i's data goes to ring slot
+// i % kRingSlots, and the game's thread resets a slot (at its Present) only
+// after the GPU has finished the frame that used it last (with the game's
+// thread one frame ahead it may wait for that). Reset per command list slot
+// (before), a game thread one frame ahead (fable2_present_pipelined) put its
+// next frame's first data into a slot that was then reset while the GPU still
+// read it: missing and garbage geometry, a washed-out picture.
+constexpr u32 kRingSlots = kUploadRingSlots;
 
 struct Chunk {
   std::unique_ptr<plume::RenderBuffer> buffer;
@@ -559,8 +575,8 @@ struct Chunk {
 };
 
 struct Ring {
-  std::vector<Chunk> chunks[kNumFrames];
-  u64 frame_bytes[kNumFrames] = {};
+  std::vector<Chunk> chunks[kRingSlots];
+  u64 frame_bytes[kRingSlots] = {};
 };
 
 Ring &ring() {
@@ -606,7 +622,7 @@ bool MakeChunk(Chunk &chunk, u64 size) {
 
 bool UploadRingInit() {
   auto &r = ring();
-  for (u32 i = 0; i < kNumFrames; ++i) {
+  for (u32 i = 0; i < kRingSlots; ++i) {
     r.chunks[i].clear();
     Chunk c;
     if (!MakeChunk(c, kChunkSize))
@@ -620,8 +636,63 @@ static std::mutex g_ring_mutex;
 static std::atomic<u64> g_ring_epoch{0};
 u64 UploadRingEpoch() { return g_ring_epoch.load(std::memory_order_acquire); }
 
-void UploadRingResetFrame(u32 slot) {
+// Frames whose Present the render thread has processed, and of those, how many
+// the GPU has finished (published when the render thread waits for a slot fence).
+static std::atomic<u64> g_frames_presented{0};
+static u64 g_slot_frames[kNumFrames] = {};
+static std::mutex g_done_mutex;
+static std::condition_variable g_done_cv;
+static u64 g_gpu_done_frames = 0;
+// The frame the game's thread is capturing (index from 0): its ring slot.
+static std::atomic<u64> g_capture_frame{0};
+static u32 SlotOf(u64 frame) { return static_cast<u32>(frame % kRingSlots); }
+// Chunks over the usual 4 left by a slot reset, for the render thread to park.
+static std::vector<std::unique_ptr<plume::RenderBuffer>> g_ring_excess;
+
+void UploadRingFramePresented() { g_frames_presented.fetch_add(1, std::memory_order_acq_rel); }
+static void ResetRingSlotLocked(u32 slot);
+
+void UploadRingNextCapturedFrame() {
+  const u64 next = g_capture_frame.load(std::memory_order_relaxed) + 1;
+  if (next >= kRingSlots) {
+    // The slot's previous user is frame next - kRingSlots: frames 0..that one done.
+    const u64 need = next - kRingSlots + 1;
+    std::unique_lock lock(g_done_mutex);
+    if (!g_done_cv.wait_for(lock, std::chrono::seconds(2), [&] { return g_gpu_done_frames >= need; })) {
+      static std::atomic<u32> logged{0};
+      if (logged.fetch_add(1) < 8)
+        EOT_WARN("[upload-ring] frame {}: the GPU finished only {} of {} frames after 2 s; reusing the slot",
+                 next, g_gpu_done_frames, need);
+    }
+  }
   std::lock_guard lock(g_ring_mutex);
+  ResetRingSlotLocked(SlotOf(next));
+  g_capture_frame.store(next, std::memory_order_relaxed);
+}
+
+void UploadRingParkExcess(VideoState &s) {
+  std::vector<std::unique_ptr<plume::RenderBuffer>> excess;
+  {
+    std::lock_guard lock(g_ring_mutex);
+    excess.swap(g_ring_excess);
+  }
+  for (auto &b : excess)
+    ParkBuffer(s, std::move(b));
+}
+
+void UploadRingSlotSubmitted(u32 command_slot) {
+  g_slot_frames[command_slot] = g_frames_presented.load(std::memory_order_acquire);
+}
+
+void UploadRingSlotFinished(u32 command_slot) {
+  {
+    std::lock_guard lock(g_done_mutex);
+    g_gpu_done_frames = std::max(g_gpu_done_frames, g_slot_frames[command_slot]);
+  }
+  g_done_cv.notify_all();
+}
+
+static void ResetRingSlotLocked(u32 slot) {
   auto &r = ring();
   g_ring_epoch.fetch_add(1, std::memory_order_acq_rel);
   auto &chunks = r.chunks[slot];
@@ -634,7 +705,9 @@ void UploadRingResetFrame(u32 slot) {
   // so destroying them now was an "Invalid Resource" GPU fault (device lost).
   while (chunks.size() > 4) {
     chunks.back().buffer->unmap();
-    ParkBuffer(state(), std::move(chunks.back().buffer));
+    // Parked by the render thread (the graveyards are its own); the GPU is
+    // done with this slot's frames already.
+    g_ring_excess.push_back(std::move(chunks.back().buffer));
     chunks.pop_back();
   }
   if (r.frame_bytes[slot] > 64ull << 20) {
@@ -655,7 +728,8 @@ bool UploadAllocate(u64 size, u64 alignment, UploadAlloc *out) {
   if (alignment == 0)
     alignment = 1;
   std::lock_guard lock(g_ring_mutex);
-  const u32 slot = s.recording_slot();
+  const u32 slot = SlotOf(g_capture_frame.load(std::memory_order_relaxed));
+  (void)s;
   auto &chunks = r.chunks[slot];
   for (u32 attempt = 0; attempt < 2; ++attempt) {
     for (auto &c : chunks) {
@@ -687,11 +761,11 @@ bool UploadBytes(const void *src, u64 size, u64 alignment, UploadAlloc *out) {
   return true;
 }
 
-static u64 g_ring_peak[kNumFrames];
+static u64 g_ring_peak[kRingSlots];
 u64 UploadRingBytesThisFrame() {
-  auto &s = state();
-  return ring().frame_bytes[s.recording_slot()];
+  return ring().frame_bytes[SlotOf(g_capture_frame.load(std::memory_order_relaxed))];
 }
+u32 UploadRingSlot() { return SlotOf(g_capture_frame.load(std::memory_order_relaxed)); }
 
 u64 UploadRingCapacityBytes(u32 *chunks) {
   std::lock_guard lock(g_ring_mutex);

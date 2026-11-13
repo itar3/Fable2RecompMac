@@ -2704,10 +2704,11 @@ void BindTexturesAndSamplers(VideoState &s, DeviceView dev, u32 texture_mask,
 }
 
 bool UploadZeroBuffer(VideoState &s, UploadAlloc *out) {
-  static UploadAlloc cached[kNumFrames];
-  static u64 cached_frame[kNumFrames] = {};
-  static bool cached_valid[kNumFrames] = {};
-  const u32 slot = s.recording_slot();
+  static UploadAlloc cached[kUploadRingSlots];
+  static u64 cached_frame[kUploadRingSlots] = {};
+  static bool cached_valid[kUploadRingSlots] = {};
+  const u32 slot = UploadRingSlot();
+  (void)s;
   if (cached_valid[slot] && cached_frame[slot] == UploadRingEpoch()) {
     *out = cached[slot];
     return true;

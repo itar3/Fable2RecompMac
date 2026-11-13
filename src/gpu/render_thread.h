@@ -14,6 +14,7 @@
 
 namespace eot::gpu {
 
+struct VideoState;
 constexpr u64 kTexturePlacementAlignment = 512;
 constexpr u64 kTextureRowPitchAlignment = 256;
 constexpr u64 kConstantBufferAlignment = 256;
@@ -28,7 +29,16 @@ struct UploadAlloc {
 };
 
 bool UploadRingInit();
-void UploadRingResetFrame(u32 slot);
+// Upload ring: frames as the game's thread captures them (see frame_ring.cpp).
+// 2: with 3, occlusion query results flickered while standing still (cause not found;
+// 2026-11-13), and 2 also suffice for the game's thread running one frame ahead.
+constexpr u32 kUploadRingSlots = 2;
+void UploadRingNextCapturedFrame();  // game's thread, at its Present
+void UploadRingFramePresented();     // render thread, PresentLocked
+void UploadRingSlotSubmitted(u32 command_slot);
+void UploadRingSlotFinished(u32 command_slot);
+u32 UploadRingSlot();
+void UploadRingParkExcess(VideoState &s);  // render thread
 u64 UploadRingEpoch();
 
 bool UploadAllocate(u64 size, u64 alignment, UploadAlloc *out);
