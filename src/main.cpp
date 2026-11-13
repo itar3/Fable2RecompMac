@@ -148,6 +148,21 @@ class Fable2App : public rex::ReXApp {
       return;
     }
     eot::gpu::GuestShadersInit();
+    // The runtime's own dialogs (on-screen keyboard, message boxes) are ImGui
+    // windows drawn into the presented frame. Without this hook they were never
+    // drawn: XamShowKeyboardUI (a villager's "Set Nickname") then waited for a
+    // dialog nobody could see while it held all controller input, and the game
+    // looked frozen. (As in EdgeOfTimeRecomp's ReeotApp::InstallOverlayHook.)
+    eot::gpu::SetOverlayDrawHook([this](plume::RenderCommandList *cmd,
+                                        plume::RenderFramebuffer *framebuffer, uint32_t width,
+                                        uint32_t height) {
+      if (!imgui_drawer() || !imgui_drawer()->HasDialogs() || eot::gpu::Video::IsShuttingDown())
+        return;
+      app_context().CallInUIThreadSynchronous([&] {
+        eot::gpu::OverlayDrawContext ctx(width, height, cmd, framebuffer);
+        imgui_drawer()->Draw(ctx);
+      });
+    });
     // Pipelines drawn are recorded (<cache root>/pso/pso_drawn_*.csv) and the
     // recorded ones are built on worker threads from boot on: without it every
     // new pipeline was built on the render thread in the frame that first drew
