@@ -49,7 +49,7 @@ let resolutions: [(value: String, label: String)] = [
 let renderScales: [(value: Double, label: String)] = [
   (0.5, "50%"), (0.75, "75%"), (1.0, "100%"), (1.25, "125%"), (1.5, "150%"),
 ]
-let frameCaps: [(value: Int, label: String)] = [(0, "Off"), (30, "30 fps"), (60, "60 fps")]
+let frameCaps: [(value: Int, label: String)] = [(0, "Off"), (30, "30 fps"), (40, "40 fps"), (60, "60 fps")]
 
 let fable2TitleId: UInt32 = 0x4D53_07F1
 
@@ -1102,6 +1102,10 @@ struct SettingsView: View {
         Section("Performance") {
           Picker("Frame rate cap", selection: $frameCap) {
             ForEach(frameCaps, id: \.value) { Text($0.label).tag($0.value) }
+          }
+          if frameCap == 40 {
+            Text("40 fps is smooth on 120 Hz screens (ProMotion) and does about a third less GPU work than 60: a cooler, quieter Mac. On 60 Hz screens it judders; use 30 or 60 there.")
+              .font(.caption).foregroundStyle(.secondary)
           }
           Toggle("VSync", isOn: $vsync)
           Toggle("Power saving", isOn: $powerSaving)

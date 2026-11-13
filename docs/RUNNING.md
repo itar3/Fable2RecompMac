@@ -119,7 +119,7 @@ output to a file:
 | `--fullscreen` | `true` | Fullscreen or windowed |
 | `--window_width`, `--window_height` | | Window size |
 | `--video_mode_refresh_rate` | `120` | `120` = up to 60 fps, `60` = the original 30 fps |
-| `--eot_fps_limit` | `0` | Frame rate cap (`60`: steady 60 fps, less GPU work and heat; `0` = none) |
+| `--eot_fps_limit` | `0` | Frame rate cap (`60`: steady 60 fps, less GPU work and heat; `40`: even pacing on 120 Hz screens, about a third less GPU work than 60; `0` = none) |
 | `--eot_resolution` | `1080p` | Render resolution in fullscreen (`720p`, `1080p`, `1440p`, `2160p`, `display`, `native`) |
 | `--eot_render_scale` | `1.0` | Extra scale on top of the render resolution |
 | `--fable2_shader_dump_dir=<dir>` | | Save shaders the build doesn't have yet into `<dir>` |
