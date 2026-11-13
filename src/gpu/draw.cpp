@@ -2712,7 +2712,7 @@ bool UploadZeroBuffer(VideoState &s, UploadAlloc *out) {
     *out = cached[slot];
     return true;
   }
-  if (!UploadAllocate(4096, 16, out))
+  if (!UploadAllocate(4096, kConstantBufferAlignment, out))
     return false;
   std::memset(out->cpu, 0, 4096);
   cached[slot] = *out;
@@ -4657,6 +4657,8 @@ void ReplayDraw(VideoState &s, const DrawPacket &pk) {
           s.root_cbv_index[r], alloc.gpuVa);
       return;
     }
+    cmd->setGraphicsRootDescriptor(plume::RenderBufferReference(alloc.buffer, alloc.offset), r);
+#elif defined(FABLE2_CONSTANT_BUFFERS)
     cmd->setGraphicsRootDescriptor(plume::RenderBufferReference(alloc.buffer, alloc.offset), r);
 #else
     const u64 address = alloc.gpuVa;

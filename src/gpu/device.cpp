@@ -972,6 +972,12 @@ bool BuildPipelineLayout(VideoState &s) {
   layout_builder.addPushConstant(0, 4, kCopyPushConstantByteOffset + sizeof(CopyPushConstants),
                                  plume::RenderShaderStageFlag::VERTEX |
                                      plume::RenderShaderStageFlag::PIXEL);
+#if defined(FABLE2_CONSTANT_BUFFERS)
+  // The guest shaders' vertex, pixel and shared constants (XE_CONSTANT_BUFFERS):
+  // uniform buffers in set 5, pushed per draw (root descriptors 0..2).
+  for (u32 r = 0; r < 3; ++r)
+    layout_builder.addRootDescriptor(r, 5, plume::RenderRootDescriptorType::CONSTANT_BUFFER);
+#endif
 #endif
 
   layout_builder.end();

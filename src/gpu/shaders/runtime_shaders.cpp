@@ -289,7 +289,12 @@ void RuntimeShadersInit() {
       return;
     s.initialized = true;
     const std::string &dir = REXCVAR_GET(fable2_runtime_shader_dir);
+#if defined(FABLE2_CONSTANT_BUFFERS)
+    // Translations differ by how shaders read constants: never mix the two kinds.
+    s.dir = dir.empty() ? rex::filesystem::GetExecutableFolder() / "shader_runtime_cb" : fs::path(dir) / "cb";
+#else
     s.dir = dir.empty() ? rex::filesystem::GetExecutableFolder() / "shader_runtime" : fs::path(dir);
+#endif
   }
   if (!REXCVAR_GET(fable2_runtime_shaders))
     return;

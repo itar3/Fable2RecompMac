@@ -1,3 +1,33 @@
+diff --git a/XenosRecomp/CMakeLists.txt b/XenosRecomp/CMakeLists.txt
+index d141c56..c50d660 100644
+--- a/XenosRecomp/CMakeLists.txt
++++ b/XenosRecomp/CMakeLists.txt
+@@ -40,6 +40,10 @@ if (CMAKE_CXX_COMPILER_ID STREQUAL "Clang" OR CMAKE_CXX_COMPILER_ID STREQUAL "Ap
+ endif()
+ 
+ target_compile_definitions(XenosRecomp PRIVATE REEOT_RECOMP)
++option(XENOS_RECOMP_CONSTANT_BUFFERS "SPIR-V shaders read their constants from uniform buffers (descriptor set 5) instead of buffer device addresses" OFF)
++if (XENOS_RECOMP_CONSTANT_BUFFERS)
++    target_compile_definitions(XenosRecomp PRIVATE XENOS_RECOMP_CONSTANT_BUFFERS)
++endif()
+ 
+ if (WIN32)
+     target_compile_definitions(XenosRecomp PRIVATE _CRT_SECURE_NO_WARNINGS)
+diff --git a/XenosRecomp/dxc_compiler.cpp b/XenosRecomp/dxc_compiler.cpp
+index 661e0c5..6745555 100644
+--- a/XenosRecomp/dxc_compiler.cpp
++++ b/XenosRecomp/dxc_compiler.cpp
+@@ -47,6 +47,10 @@ IDxcBlob* DxcCompiler::compile(const std::string& shaderSource, bool compilePixe
+ 
+         if (!compilePixelShader)
+             args[argCount++] = L"-fvk-invert-y";
++
++#ifdef XENOS_RECOMP_CONSTANT_BUFFERS
++        args[argCount++] = L"-DXE_CONSTANT_BUFFERS";
++#endif
+     }
+     else
+     {
 diff --git a/XenosRecomp/main.cpp b/XenosRecomp/main.cpp
 index d979f34..cabab15 100644
 --- a/XenosRecomp/main.cpp
@@ -100,7 +130,7 @@ index d979f34..cabab15 100644
          for (uint32_t v : vertexLayouts)
              f.print("0x{:X},", v);
 diff --git a/XenosRecomp/shader_common.h b/XenosRecomp/shader_common.h
-index f2f670c..ab819d8 100644
+index 3bfb270..eaa386e 100644
 --- a/XenosRecomp/shader_common.h
 +++ b/XenosRecomp/shader_common.h
 @@ -12,6 +12,11 @@
@@ -115,41 +145,104 @@ index f2f670c..ab819d8 100644
  #endif
  
  #if !defined(__cplusplus) || defined(__INTELLISENSE__)
-@@ -46,6 +51,33 @@ struct PushConstants
- #define g_LoopConstants(i)         vk::RawBufferLoad<uint4>(g_PushConstants.SharedConstants + 400 + (i)*16)
- #define g_PosScale                 vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 912)
- #define g_PosOffset                vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 928)
-+#define g_HostBaseVertex           vk::RawBufferLoad<int>(g_PushConstants.SharedConstants + 1032)
-+#define g_PixelPosScale            vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 1036)
-+#define g_PointSizeScale           vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 1040)
-+#define g_PointSizeConstant        vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 1044)
-+#define g_IsPointDraw              vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 1048)
-+#define g_TexHostScale(slot)       vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 1056 + (slot) * 4)
-+#define g_TileOffsetKeep           vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 1052)
+@@ -30,22 +35,81 @@ struct PushConstants
+ 
+ [[vk::push_constant]] ConstantBuffer<PushConstants> g_PushConstants;
+ 
++// Constant access. By default the renderer passes the addresses of the vertex,
++// pixel and shared constant blocks in push constants and shaders load through
++// them (buffer device address). With XE_CONSTANT_BUFFERS the blocks are uniform
++// buffers in descriptor set XE_CONSTANT_SET (binding 0 vertex, 1 pixel, 2
++// shared): the GPU's constant path (on Metal the constant address space, which
++// the compiler can load once per draw instead of once per pixel).
++#ifdef XE_CONSTANT_BUFFERS
++#ifndef XE_CONSTANT_SET
++#define XE_CONSTANT_SET 5
++#endif
++[[vk::binding(0, XE_CONSTANT_SET)]] cbuffer XeVertexShaderConstantsBlock { float4 g_XeVertexShaderConstants[512]; };
++[[vk::binding(1, XE_CONSTANT_SET)]] cbuffer XePixelShaderConstantsBlock { float4 g_XePixelShaderConstants[512]; };
++[[vk::binding(2, XE_CONSTANT_SET)]] cbuffer XeSharedConstantsBlock { uint4 g_XeSharedConstants[96]; };
++#define XE_CONST_F4(block, off)    g_Xe##block[(off) >> 4]
++#define XE_SHARED_U4(off)          g_XeSharedConstants[(off) >> 4]
++#define XE_SHARED_U32(off)         g_XeSharedConstants[(off) >> 4][((off) >> 2) & 3]
++#define XE_SHARED_F4(off)          asfloat(XE_SHARED_U4(off))
++#define XE_SHARED_F32(off)         asfloat(XE_SHARED_U32(off))
++#define XE_SHARED_I32(off)         asint(XE_SHARED_U32(off))
++#define XE_SHARED_F2(off)          asfloat(uint2(XE_SHARED_U32(off), XE_SHARED_U32((off) + 4)))
++#define XE_SHARED_U64(off)         (uint64_t(XE_SHARED_U32(off)) | (uint64_t(XE_SHARED_U32((off) + 4)) << 32))
++#else
++#define XE_CONST_F4(block, off)    vk::RawBufferLoad<float4>(g_PushConstants.block + (off), 0x10)
++#define XE_SHARED_U4(off)          vk::RawBufferLoad<uint4>(g_PushConstants.SharedConstants + (off))
++#define XE_SHARED_U32(off)         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + (off))
++#define XE_SHARED_F4(off)          vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + (off))
++#define XE_SHARED_F32(off)         vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + (off))
++#define XE_SHARED_I32(off)         vk::RawBufferLoad<int>(g_PushConstants.SharedConstants + (off))
++#define XE_SHARED_F2(off)          vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + (off))
++#define XE_SHARED_U64(off)         vk::RawBufferLoad<uint64_t>(g_PushConstants.SharedConstants + (off))
++#endif
++
+ #ifdef REEOT_RECOMP
+-#define g_Booleans(i)              vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 320 + (i)*4)
+-#define g_SwappedTexcoords         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 352)
+-#define g_HalfPixelOffset          vk::RawBufferLoad<float2>(g_PushConstants.SharedConstants + 356)
+-#define g_AlphaThreshold           vk::RawBufferLoad<float>(g_PushConstants.SharedConstants + 364)
+-#define g_SwappedNormals           vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 368)
+-#define g_SwappedBinormals         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 372)
+-#define g_SwappedTangents          vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 376)
+-#define g_SwappedBlendWeights      vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 380)
+-#define g_SwappedPositions         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 384)
+-#define g_SintTexcoords            vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 388)
+-#define g_BiasedTextures           vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 392)
+-#define g_PackedDec3               vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 396)
+-#define g_LoopConstants(i)         vk::RawBufferLoad<uint4>(g_PushConstants.SharedConstants + 400 + (i)*16)
+-#define g_PosScale                 vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 912)
+-#define g_PosOffset                vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 928)
++#define g_Booleans(i)              XE_SHARED_U32(320 + (i)*4)
++#define g_SwappedTexcoords         XE_SHARED_U32(352)
++#define g_HalfPixelOffset          XE_SHARED_F2(356)
++#define g_AlphaThreshold           XE_SHARED_F32(364)
++#define g_SwappedNormals           XE_SHARED_U32(368)
++#define g_SwappedBinormals         XE_SHARED_U32(372)
++#define g_SwappedTangents          XE_SHARED_U32(376)
++#define g_SwappedBlendWeights      XE_SHARED_U32(380)
++#define g_SwappedPositions         XE_SHARED_U32(384)
++#define g_SintTexcoords            XE_SHARED_U32(388)
++#define g_BiasedTextures           XE_SHARED_U32(392)
++#define g_PackedDec3               XE_SHARED_U32(396)
++#define g_LoopConstants(i)         XE_SHARED_U4(400 + (i)*16)
++#define g_PosScale                 XE_SHARED_F4(912)
++#define g_PosOffset                XE_SHARED_F4(928)
++#define g_HostBaseVertex           XE_SHARED_I32(1032)
++#define g_PixelPosScale            XE_SHARED_F32(1036)
++#define g_PointSizeScale           XE_SHARED_F32(1040)
++#define g_PointSizeConstant        XE_SHARED_F32(1044)
++#define g_IsPointDraw              XE_SHARED_U32(1048)
++#define g_TexHostScale(slot)       XE_SHARED_F32(1056 + (slot) * 4)
++#define g_TileOffsetKeep           XE_SHARED_F32(1052)
 +// Fable 2: tessellated patch draws (bytes 1120/1124): segments per patch edge
 +// (0 = not tessellated) and the first patch index.
-+#define g_TessSegments             vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 1120)
-+#define g_TessFirstPatch           vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 1124)
++#define g_TessSegments             XE_SHARED_U32(1120)
++#define g_TessFirstPatch           XE_SHARED_U32(1124)
 +// Debug readback (byte 1128): where tessellated draws store r0 and oPos of their first vertices.
-+#define g_DebugAddress             vk::RawBufferLoad<uint64_t>(g_PushConstants.SharedConstants + 1128)
-+#define g_VsBiasedTextures         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 1136)
-+#define g_PointViewport            vk::RawBufferLoad<float4>(g_PushConstants.SharedConstants + 1152)
++#define g_DebugAddress             XE_SHARED_U64(1128)
++#define g_VsBiasedTextures         XE_SHARED_U32(1136)
++#define g_PointViewport            XE_SHARED_F4(1152)
 +// Vertex pulling flags (byte 1144): 1 = 16-bit pairs in memory order (see vfetchPullHalves).
-+#define g_PullFlags                vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 1144)
++#define g_PullFlags                XE_SHARED_U32(1144)
 +// Xenos alpha to mask (byte 1140): bit 31 enables it, bits 0..7 are the
 +// RB_COLORCONTROL dither offsets of the 2x2 pixel quad (2 bits each).
-+#define g_AlphaToMask              vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 1140)
++#define g_AlphaToMask              XE_SHARED_U32(1140)
 +// Fetches whose instruction overrides the sampler's MinFilter/MagFilter: the
 +// pixel sampler's state with point (byte 1168) or linear (byte 1232) filters.
-+#define SAMPLER_POINT(index, slot)  vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 1168 + (slot) * 4)
-+#define SAMPLER_LINEAR(index, slot) vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 1232 + (slot) * 4)
++#define SAMPLER_POINT(index, slot)  XE_SHARED_U32(1168 + (slot) * 4)
++#define SAMPLER_LINEAR(index, slot) XE_SHARED_U32(1232 + (slot) * 4)
 +// Point sprite coordinate from the pixel position and the sprite's centre and
 +// diameter (oPointInfo; a PointCoord input broke non-point pipelines on Metal).
 +#define POINT_COORD                xePointCoord(iPos.xy, iPointInfo)
  #else
  #define g_Booleans                 vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 256)
  #define g_SwappedTexcoords         vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + 260)
-@@ -79,6 +111,8 @@ struct PushConstants
+@@ -79,6 +143,8 @@ struct PushConstants
  
  #define g_Booleans(i) (g_BooleansArr[(i) / 4][(i) % 4])
  #define g_LoopConstants(i) g_LoopConstantsArr[i]
@@ -158,7 +251,7 @@ index f2f670c..ab819d8 100644
  #else
  #define DEFINE_SHARED_CONSTANTS() \
      uint g_Booleans : packoffset(c16.x); \
-@@ -159,8 +193,19 @@ float3 linearToPWLGamma(float3 lin)
+@@ -159,8 +225,19 @@ float3 linearToPWLGamma(float3 lin)
                    linearToPWLGamma1(lin.b));
  }
  
@@ -178,7 +271,7 @@ index f2f670c..ab819d8 100644
      if (biasedMask & (1u << slotIndex))
          value.rgb = value.rgb * 2.0 - 1.0;
      if (alphaMask & (1u << (16u + slotIndex)))
-@@ -172,15 +217,41 @@ float4 applyFetchSign(float4 value, uint biasedMask, uint alphaMask, uint slotIn
+@@ -172,15 +249,41 @@ float4 applyFetchSign(float4 value, uint biasedMask, uint alphaMask, uint slotIn
  }
  #endif
  
@@ -222,7 +315,7 @@ index f2f670c..ab819d8 100644
  }
  
  float2 getWeights2D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float2 texCoord, float2 offset)
-@@ -189,6 +260,31 @@ float2 getWeights2D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, f
+@@ -189,6 +292,31 @@ float2 getWeights2D(uint resourceDescriptorIndex, uint samplerDescriptorIndex, f
      return select(isnan(texCoord), 0.0, frac(texCoord * getTexture2DDimensions(texture) + offset - 0.5));
  }
  
@@ -254,7 +347,7 @@ index f2f670c..ab819d8 100644
  float w0(float a)
  {
      return (1.0f / 6.0f) * (a * (a * (-a + 3.0f) - 3.0f) + 1.0f);
-@@ -229,10 +325,21 @@ float h1(float a)
+@@ -229,10 +357,21 @@ float h1(float a)
      return 1.0f + w3(a) / (w2(a) + w3(a)) + 0.5f;
  }
  
@@ -277,7 +370,7 @@ index f2f670c..ab819d8 100644
      uint2 dimensions = getTexture2DDimensions(texture);
      
      float x = texCoord.x * dimensions.x + offset.x;
-@@ -253,17 +360,17 @@ float4 tfetch2DBicubic(uint resourceDescriptorIndex, uint samplerDescriptorIndex
+@@ -253,17 +392,17 @@ float4 tfetch2DBicubic(uint resourceDescriptorIndex, uint samplerDescriptorIndex
      float h1y = h1(fy);
  
      float4 r =
@@ -300,7 +393,7 @@ index f2f670c..ab819d8 100644
  }
  
  struct CubeMapData
-@@ -274,7 +381,7 @@ struct CubeMapData
+@@ -274,7 +413,7 @@ struct CubeMapData
  
  float4 tfetchCube(uint resourceDescriptorIndex, uint samplerDescriptorIndex, float3 texCoord, inout CubeMapData cubeMapData)
  {
@@ -309,7 +402,7 @@ index f2f670c..ab819d8 100644
  }
  
  #ifdef REEOT_RECOMP
-@@ -381,11 +488,38 @@ void eotTwoProduct(float a, float b, out float p, out float e)
+@@ -381,11 +520,38 @@ void eotTwoProduct(float a, float b, out float p, out float e)
      e = err;
  }
  
@@ -350,7 +443,7 @@ index f2f670c..ab819d8 100644
      float p, s, h, r, q;
      eotTwoProduct(a.x, b.x, p, s);
      eotTwoProduct(a.y, b.y, h, r);
-@@ -403,6 +537,7 @@ float dotP(float4 a, float4 b)
+@@ -403,6 +569,7 @@ float dotP(float4 a, float4 b)
  
  float dotP(float3 a, float3 b)
  {
@@ -358,7 +451,7 @@ index f2f670c..ab819d8 100644
      float p, s, h, r, q;
      eotTwoProduct(a.x, b.x, p, s);
      eotTwoProduct(a.y, b.y, h, r);
-@@ -428,6 +563,250 @@ float computeMipLevel(float2 pixelCoord)
+@@ -428,6 +595,250 @@ float computeMipLevel(float2 pixelCoord)
      return max(0.0, 0.5 * log2(deltaMaxSqr));
  }
  
@@ -431,7 +524,7 @@ index f2f670c..ab819d8 100644
 +// The renderer uploads the fetch constant's memory (raw guest bytes) and puts a
 +// table at SharedConstants + 1024: 96 entries of { uint64 address, uint size in
 +// dwords, uint endian } per fetch slot, address 0 if not uploaded.
-+#define g_VertexPullTable vk::RawBufferLoad<uint64_t>(g_PushConstants.SharedConstants + 1024)
++#define g_VertexPullTable XE_SHARED_U64(1024)
 +
 +// Pull sites (entry 96 + site of the vertex pull table): { slot | valid bit
 +// 31, stride in dwords, offset in dwords, format | flags << 8 | exp_adjust << 16 },
@@ -610,7 +703,7 @@ index f2f670c..ab819d8 100644
  
  #endif
 diff --git a/XenosRecomp/shader_recompiler.cpp b/XenosRecomp/shader_recompiler.cpp
-index a664536..7f8169f 100644
+index a664536..78d0772 100644
 --- a/XenosRecomp/shader_recompiler.cpp
 +++ b/XenosRecomp/shader_recompiler.cpp
 @@ -1,3 +1,6 @@
@@ -993,7 +1086,17 @@ index a664536..7f8169f 100644
      out += include;
      out += '\n';
  
-@@ -1414,6 +1636,15 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+@@ -1406,21 +1628,30 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+             {
+                 uint32_t tailCount = (isPixelShader ? 224 : 256) - constantInfo->registerIndex;
+ 
+-                println("#define {}(INDEX) select((INDEX) < {}, vk::RawBufferLoad<float4>(g_PushConstants.{}ShaderConstants + ({} + min(INDEX, {})) * 16, 0x10), 0.0)",
++                println("#define {}(INDEX) select((INDEX) < {}, XE_CONST_F4({}ShaderConstants, ({} + min(INDEX, {})) * 16), 0.0)",
+                     constantName, tailCount, shaderName, constantInfo->registerIndex.get(), tailCount - 1);
+ #ifdef REEOT_RECOMP
+                 if (velocityVertexShader())
+-                    println("#define prev_{}(INDEX) select((INDEX) < {}, vk::RawBufferLoad<float4>(g_PushConstants.{}ShaderConstants + 4096 + ({} + min(INDEX, {})) * 16, 0x10), 0.0)",
++                    println("#define prev_{}(INDEX) select((INDEX) < {}, XE_CONST_F4({}ShaderConstants, 4096 + ({} + min(INDEX, {})) * 16), 0.0)",
                          constantName, tailCount, shaderName, constantInfo->registerIndex.get(), tailCount - 1);
  #endif
              }
@@ -1003,22 +1106,34 @@ index a664536..7f8169f 100644
 +                // the console and xy is the current tile's screen offset (0.8
 +                // for the lower tile); the host draws the whole frame at once,
 +                // so pixel positions are already screen-absolute.
-+                println("#define {} (vk::RawBufferLoad<float4>(g_PushConstants.{}ShaderConstants + {}, 0x10) * float4(g_TileOffsetKeep, g_TileOffsetKeep, 1.0, 1.0))",
++                println("#define {} (XE_CONST_F4({}ShaderConstants, {}) * float4(g_TileOffsetKeep, g_TileOffsetKeep, 1.0, 1.0))",
 +                    constantName, shaderName, constantInfo->registerIndex * 16);
 +            }
              else
              {
-                 println("#define {} vk::RawBufferLoad<float4>(g_PushConstants.{}ShaderConstants + {}, 0x10)",
-@@ -1446,11 +1677,11 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+-                println("#define {} vk::RawBufferLoad<float4>(g_PushConstants.{}ShaderConstants + {}, 0x10)",
++                println("#define {} XE_CONST_F4({}ShaderConstants, {})",
+                     constantName, shaderName, constantInfo->registerIndex * 16);
+ #ifdef REEOT_RECOMP
+                 if (velocityVertexShader())
+-                    println("#define prev_{} vk::RawBufferLoad<float4>(g_PushConstants.{}ShaderConstants + 4096 + {}, 0x10)",
++                    println("#define prev_{} XE_CONST_F4({}ShaderConstants, 4096 + {})",
+                         constantName, shaderName, constantInfo->registerIndex * 16);
+ #endif
+             }
+@@ -1445,12 +1676,12 @@ void ShaderRecompiler::recompile(const uint8_t* shaderData, const std::string_vi
+         {
              for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
              {
-                 println("#define {}_Texture{}DescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
+-                println("#define {}_Texture{}DescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
 -                    constantName, TEXTURE_DIMENSIONS[j], j * 64 + constantInfo->registerIndex * 4);
++                println("#define {}_Texture{}DescriptorIndex XE_SHARED_U32({})",
 +                    constantName, TEXTURE_DIMENSIONS[j], textureDescriptorOffset(j, constantInfo->registerIndex));
              }
  
-             println("#define {}_SamplerDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
+-            println("#define {}_SamplerDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
 -                constantName, std::size(TEXTURE_DIMENSIONS) * 64 + constantInfo->registerIndex * 4);
++            println("#define {}_SamplerDescriptorIndex XE_SHARED_U32({})",
 +                constantName, samplerDescriptorOffset(constantInfo->registerIndex));
  
              samplers.emplace(constantInfo->registerIndex, constantName);
@@ -1034,12 +1149,14 @@ index a664536..7f8169f 100644
              continue;
          for (size_t j = 0; j < std::size(TEXTURE_DIMENSIONS); j++)
          {
-             println("#define s{}_Texture{}DescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
+-            println("#define s{}_Texture{}DescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
 -                r, TEXTURE_DIMENSIONS[j], j * 64 + r * 4);
++            println("#define s{}_Texture{}DescriptorIndex XE_SHARED_U32({})",
 +                r, TEXTURE_DIMENSIONS[j], textureDescriptorOffset(j, r));
          }
-         println("#define s{}_SamplerDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
+-        println("#define s{}_SamplerDescriptorIndex vk::RawBufferLoad<uint>(g_PushConstants.SharedConstants + {})",
 -            r, std::size(TEXTURE_DIMENSIONS) * 64 + r * 4);
++        println("#define s{}_SamplerDescriptorIndex XE_SHARED_U32({})",
 +            r, samplerDescriptorOffset(r));
      }
  #endif

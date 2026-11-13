@@ -45,6 +45,11 @@ add_subdirectory("${FABLE2_THIRDPARTY}/plume" "${CMAKE_BINARY_DIR}/plume" EXCLUD
 set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
 set(ZSTD_BUILD_SHARED OFF CACHE BOOL "" FORCE)
 set(ZSTD_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+# Guest shader constants: uniform buffers bound per draw (the GPU's constant
+# path; Metal's constant address space) instead of loads through buffer
+# addresses. The translator and the renderer must agree.
+option(FABLE2_CONSTANT_BUFFERS "Guest shaders read their constants from bound uniform buffers" OFF)
+set(XENOS_RECOMP_CONSTANT_BUFFERS ${FABLE2_CONSTANT_BUFFERS} CACHE BOOL "" FORCE)
 add_subdirectory("${FABLE2_THIRDPARTY}/XenosRecomp" "${CMAKE_BINARY_DIR}/XenosRecomp" EXCLUDE_FROM_ALL)
 
 # Host shaders (copy, resolve, TAA, ImGui): compiled with the bundled dxc.
@@ -135,6 +140,9 @@ target_include_directories(Fable2 PRIVATE
     "${FABLE2_THIRDPARTY}/XenosRecomp/XenosRecomp"
     "${FABLE2_THIRDPARTY}/XenosRecomp/thirdparty/smol-v/source")
 target_compile_definitions(Fable2 PRIVATE FABLE2_NATIVE_RENDERER EOT_MVK NOMINMAX)
+if(FABLE2_CONSTANT_BUFFERS)
+    target_compile_definitions(Fable2 PRIVATE FABLE2_CONSTANT_BUFFERS)
+endif()
 # Runtime shader translation (src/gpu/shaders/runtime_shaders.cpp): the
 # translator and shader header this build used.
 target_compile_definitions(Fable2 PRIVATE
