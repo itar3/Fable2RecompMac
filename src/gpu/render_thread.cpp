@@ -3,6 +3,7 @@
 // BSD 3-Clause
 
 #include "gpu/render_thread.h"
+#include "gpu_capture.h"
 #include "gpu/queries.h"
 
 #include <algorithm>
@@ -148,6 +149,7 @@ void Execute(VideoState &s, Queue &q, RenderCommand &c) {
     g_present_seq = c.seq;
     PresentLocked(s, c.va);
     g_present_seq = 0;
+    Fable2GpuCaptureOnPresent();  // debugging: Metal frame capture between submitted frames
     PublishExecuted(q, c.seq);
     break;
   case RenderCommandType::Unlock:

@@ -43,6 +43,7 @@
 #include "gpu/taa.h"
 #include "gpu/textures.h"
 #include "gpu/trace.h"
+#include "gpu_capture.h"
 
 #include <SDL3/SDL.h>
 #include <cmath>
@@ -1157,6 +1158,7 @@ void Video::Present(u32 front_buffer_texture_va) {
     } else {
       std::lock_guard lock(s.mutex);
       PresentLocked(s, front_buffer_texture_va);
+      Fable2GpuCaptureOnPresent();
     }
   }
   FrameLimitWait(s);
