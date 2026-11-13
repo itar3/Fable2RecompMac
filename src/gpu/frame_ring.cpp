@@ -87,6 +87,7 @@ void BeginCommandList(VideoState &s) {
   const u32 cur = s.frame.load(std::memory_order_relaxed);
   s.command_list = s.command_lists[cur].get();
   s.command_list->begin();
+  QueriesCommandListBegunLocked(s);
   if (!s.null_texture_barriers_submitted) {
     // The null textures read (0, 0, 0, 1) through a view swizzle, which
     // MoltenVK ignores without full image view swizzle support; their texels

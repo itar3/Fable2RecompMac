@@ -28,10 +28,16 @@
 #include "gpu/device.h"
 #include "gpu/render_thread.h"
 #include "gpu/settings.h"
+#if !defined(EOT_D3D12)
+#include <plume_vulkan.h>
+#endif
 #include "gpu/trace.h"
 
 REXCVAR_DECLARE(bool, fable2_query_force_visible);
 REXCVAR_DECLARE(bool, fable2_query_force_exposure);
+REXCVAR_DEFINE_BOOL(fable2_query_break_pass, false, "Fable2",
+                    "Native renderer: begin and end occlusion queries outside render passes (old behaviour: "
+                    "each query ended the pass, an extra store and load of its attachments)");
 REXCVAR_DEFINE_BOOL(fable2_query_binary, false, "Fable2",
                     "Native renderer: occlusion queries answer 0 (no host sample) or fully visible");
 REXCVAR_DEFINE_BOOL(fable2_query_stale_visible, true, "Fable2",
@@ -124,6 +130,31 @@ void MaybeLogStats() {
 
 }
 
+namespace {
+// Queries stay inside the render pass unless fable2_query_break_pass; the
+// pass is then left bound (no restart around each query).
+bool QueriesBreakPass(VideoState &s) {
+  const bool brk = REXCVAR_GET(fable2_query_break_pass);
+#if !defined(EOT_D3D12)
+  static_cast<plume::VulkanCommandList *>(s.command_list)->queriesEndRenderPass = brk;
+#endif
+  return brk;
+}
+}  // namespace
+
+// A new command list: reset the frame's query slot now, while no render pass
+// is open (a reset inside one would end it).
+void QueriesCommandListBegunLocked(VideoState &s) {
+  auto &q = st();
+  if (q.unsupported || !s.command_list)
+    return;
+  Slot &slot = q.slots[s.recording_slot()];
+  if (slot.pool && slot.needsReset) {
+    s.command_list->resetQueryPool(slot.pool.get(), 0, kQueriesPerSlot);
+    slot.needsReset = false;
+  }
+}
+
 void QueryBeginLocked(VideoState &s, u32 query_va, u32 generation) {
   auto &q = st();
   if (q.unsupported || !s.command_list)
@@ -155,8 +186,9 @@ void QueryBeginLocked(VideoState &s, u32 query_va, u32 generation) {
   if (q.active.count(query_va))
     return; // begun twice: keep the first
   const u32 index = slot.used++;
+  if (QueriesBreakPass(s))
+    s.bound_framebuffer = nullptr;
   s.command_list->beginQuery(slot.pool.get(), index);
-  s.bound_framebuffer = nullptr;
   ++g_host_begin;
   q.active[query_va] = {slot_index, index, generation};
   if (DiagNow(s))
@@ -171,8 +203,9 @@ void QueryEndLocked(VideoState &s, u32 query_va, u32 generation) {
   const Active a = it->second;
   q.active.erase(it);
   Slot &slot = q.slots[a.slot];
+  if (QueriesBreakPass(s))
+    s.bound_framebuffer = nullptr;
   s.command_list->endQuery(slot.pool.get(), a.index);
-  s.bound_framebuffer = nullptr;
   ++g_host_end;
   if (DiagNow(s))
     EOT_INFO("[diag] query {:#x} end", query_va);

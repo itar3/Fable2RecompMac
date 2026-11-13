@@ -108,7 +108,7 @@ index 916698f..6580c6a 100644
              assert(false && "Unknown format.");
              return 1;
 diff --git a/plume_vulkan.cpp b/plume_vulkan.cpp
-index fceae75..618813e 100644
+index fceae75..9345b7c 100644
 --- a/plume_vulkan.cpp
 +++ b/plume_vulkan.cpp
 @@ -8,9 +8,11 @@
@@ -425,7 +425,16 @@ index fceae75..618813e 100644
      const uint64_t *VulkanQueryPool::getResults() const {
          return results.data();
      }
-@@ -2831,7 +3013,61 @@ namespace plume {
+@@ -2819,6 +3001,8 @@ namespace plume {
+ 
+     void VulkanCommandList::begin() {
+         vkResetCommandBuffer(vk, 0);
++        passQueries.clear();
++        passQueriesClosed.clear();
+ 
+         VkCommandBufferBeginInfo beginInfo = {};
+         beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+@@ -2831,7 +3015,61 @@ namespace plume {
          }
      }
  
@@ -487,7 +496,7 @@ index fceae75..618813e 100644
          endActiveRenderPass();
  
          VkResult res = vkEndCommandBuffer(vk);
-@@ -2854,6 +3090,47 @@ namespace plume {
+@@ -2854,6 +3092,47 @@ namespace plume {
              return;
          }
  
@@ -535,7 +544,7 @@ index fceae75..618813e 100644
          endActiveRenderPass();
  
          const bool geometryEnabled = queue->device->capabilities.geometryShader;
-@@ -2952,14 +3229,16 @@ namespace plume {
+@@ -2952,14 +3231,16 @@ namespace plume {
  
      void VulkanCommandList::drawInstanced(uint32_t vertexCountPerInstance, uint32_t instanceCount, uint32_t startVertexLocation, uint32_t startInstanceLocation) {
          assert(activeGraphicsPipelineLayout != nullptr);
@@ -554,7 +563,7 @@ index fceae75..618813e 100644
  
          vkCmdDrawIndexed(vk, indexCountPerInstance, instanceCount, startIndexLocation, baseVertexLocation, startInstanceLocation);
      }
-@@ -3027,7 +3306,32 @@ namespace plume {
+@@ -3027,7 +3308,32 @@ namespace plume {
      }
  
      void VulkanCommandList::setGraphicsRootDescriptor(RenderBufferReference bufferReference, uint32_t rootDescriptorIndex) {
@@ -588,7 +597,7 @@ index fceae75..618813e 100644
      }
  
      void VulkanCommandList::setRaytracingPipelineLayout(const RenderPipelineLayout *pipelineLayout) {
-@@ -3122,7 +3426,14 @@ namespace plume {
+@@ -3122,7 +3428,14 @@ namespace plume {
      }
  
      void VulkanCommandList::setFramebuffer(const RenderFramebuffer *framebuffer) {
@@ -604,7 +613,7 @@ index fceae75..618813e 100644
  
          if (framebuffer != nullptr) {
              const VulkanFramebuffer *interfaceFramebuffer = static_cast<const VulkanFramebuffer *>(framebuffer);
-@@ -3137,6 +3448,14 @@ namespace plume {
+@@ -3137,6 +3450,14 @@ namespace plume {
          vkCmdSetDepthBias(vk, depthBias, depthBiasClamp, slopeScaledDepthBias);
      }
  
@@ -619,7 +628,7 @@ index fceae75..618813e 100644
      static void clearCommonRectVector(uint32_t width, uint32_t height, const RenderRect *clearRects, uint32_t clearRectsCount, std::vector<VkClearRect> &rectVector) {
          rectVector.clear();
  
-@@ -3169,7 +3488,20 @@ namespace plume {
+@@ -3169,7 +3490,20 @@ namespace plume {
          assert(attachmentIndex < targetFramebuffer->colorAttachments.size());
          assert((clearRectsCount == 0) || (clearRects != nullptr));
  
@@ -640,7 +649,7 @@ index fceae75..618813e 100644
  
          thread_local std::vector<VkClearRect> rectVector;
          clearCommonRectVector(targetFramebuffer->getWidth(), targetFramebuffer->getHeight(), clearRects, clearRectsCount, rectVector);
-@@ -3189,7 +3521,20 @@ namespace plume {
+@@ -3189,7 +3523,20 @@ namespace plume {
          assert(targetFramebuffer != nullptr);
          assert((clearRectsCount == 0) || (clearRects != nullptr));
  
@@ -661,7 +670,7 @@ index fceae75..618813e 100644
  
          thread_local std::vector<VkClearRect> rectVector;
          clearCommonRectVector(targetFramebuffer->getWidth(), targetFramebuffer->getHeight(), clearRects, clearRectsCount, rectVector);
-@@ -3224,6 +3569,11 @@ namespace plume {
+@@ -3224,6 +3571,11 @@ namespace plume {
      }
  
      void VulkanCommandList::copyTextureRegion(const RenderTextureCopyLocation &dstLocation, const RenderTextureCopyLocation &srcLocation, uint32_t dstX, uint32_t dstY, uint32_t dstZ, const RenderBox *srcBox) {
@@ -673,7 +682,7 @@ index fceae75..618813e 100644
          endActiveRenderPass();
          
          assert(dstLocation.type != RenderTextureCopyType::UNKNOWN);
-@@ -3305,6 +3655,10 @@ namespace plume {
+@@ -3305,6 +3657,10 @@ namespace plume {
      }
  
      void VulkanCommandList::copyTexture(const RenderTexture *dstTexture, const RenderTexture *srcTexture) {
@@ -684,7 +693,7 @@ index fceae75..618813e 100644
          endActiveRenderPass();
  
          assert(dstTexture != nullptr);
-@@ -3345,6 +3699,10 @@ namespace plume {
+@@ -3345,6 +3701,10 @@ namespace plume {
      }
  
      void VulkanCommandList::resolveTextureRegion(const RenderTexture *dstTexture, uint32_t dstX, uint32_t dstY, const RenderTexture *srcTexture, const RenderRect *srcRect, RenderResolveMode resolveMode) {
@@ -695,7 +704,7 @@ index fceae75..618813e 100644
          assert(dstTexture != nullptr);
          assert(srcTexture != nullptr);
          assert(resolveMode == RenderResolveMode::AVERAGE && "Vulkan only supports AVERAGE resolve mode.");
-@@ -3474,11 +3832,14 @@ namespace plume {
+@@ -3474,11 +3834,14 @@ namespace plume {
      }
  
      void VulkanCommandList::discardTexture(const RenderTexture* texture) {
@@ -710,7 +719,7 @@ index fceae75..618813e 100644
  
          const VulkanQueryPool *interfaceQueryPool = static_cast<const VulkanQueryPool *>(queryPool);
          vkCmdResetQueryPool(vk, interfaceQueryPool->vk, queryFirstIndex, queryCount);
-@@ -3491,25 +3852,215 @@ namespace plume {
+@@ -3491,25 +3854,245 @@ namespace plume {
          vkCmdWriteTimestamp(vk, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, interfaceQueryPool->vk, queryIndex);
      }
  
@@ -719,16 +728,40 @@ index fceae75..618813e 100644
 +    // render passes recorded in between.
 +    void VulkanCommandList::beginQuery(const RenderQueryPool *queryPool, uint32_t queryIndex) {
 +        assert(queryPool != nullptr);
-+        endActiveRenderPass();
++        const VkQueryPool pool = static_cast<const VulkanQueryPool *>(queryPool)->vk;
++        if (queriesEndRenderPass) {
++            endActiveRenderPass();
++        }
++
 +        // Precise: sample counts, not just "any passed" (MoltenVK otherwise uses Metal's boolean mode).
-+        vkCmdBeginQuery(vk, static_cast<const VulkanQueryPool *>(queryPool)->vk, queryIndex,
-+                        queue->device->occlusionQueryPrecise ? VK_QUERY_CONTROL_PRECISE_BIT : 0);
++        vkCmdBeginQuery(vk, pool, queryIndex, queue->device->occlusionQueryPrecise ? VK_QUERY_CONTROL_PRECISE_BIT : 0);
++        if (activeRenderPass != VK_NULL_HANDLE) {
++            // Inside the pass: no load/store of its attachments around the query.
++            passQueries.push_back({ pool, queryIndex });
++        }
 +    }
 +
 +    void VulkanCommandList::endQuery(const RenderQueryPool *queryPool, uint32_t queryIndex) {
 +        assert(queryPool != nullptr);
-+        endActiveRenderPass();
-+        vkCmdEndQuery(vk, static_cast<const VulkanQueryPool *>(queryPool)->vk, queryIndex);
++        const VkQueryPool pool = static_cast<const VulkanQueryPool *>(queryPool)->vk;
++        auto matches = [&](const PassQuery &q) { return (q.pool == pool) && (q.index == queryIndex); };
++        auto closed = std::find_if(passQueriesClosed.begin(), passQueriesClosed.end(), matches);
++        if (closed != passQueriesClosed.end()) {
++            // Its render pass ended first and closed it.
++            passQueriesClosed.erase(closed);
++            return;
++        }
++
++        auto open = std::find_if(passQueries.begin(), passQueries.end(), matches);
++        if (open != passQueries.end()) {
++            passQueries.erase(open);
++        }
++        else {
++            // Begun outside a render pass: it must end outside one too.
++            endActiveRenderPass();
++        }
++
++        vkCmdEndQuery(vk, pool, queryIndex);
 +    }
 +
 +    // Fable 2: begins fb's pass (statistics and the diag trace included).
@@ -932,13 +965,19 @@ index fceae75..618813e 100644
          if (activeRenderPass != VK_NULL_HANDLE) {
 +            if (g_passTrace.load(std::memory_order_relaxed) && g_passTraceFn && activeFramebuffer)
 +                g_passTraceFn(false, activeFramebuffer->width, activeFramebuffer->height, 0, __builtin_return_address(0));
++            for (const PassQuery &q : passQueries) {
++                vkCmdEndQuery(vk, q.pool, q.index);
++                passQueriesClosed.push_back(q);
++            }
++
++            passQueries.clear();
              vkCmdEndRenderPass(vk);
              activeRenderPass = VK_NULL_HANDLE;
 +            activeFramebuffer = nullptr;
          }
      }
  
-@@ -3925,6 +4476,7 @@ namespace plume {
+@@ -3925,6 +4508,7 @@ namespace plume {
          deviceFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
          deviceFeatures.pNext = featuresChain;
          vkGetPhysicalDeviceFeatures2(physicalDevice, &deviceFeatures);
@@ -946,7 +985,7 @@ index fceae75..618813e 100644
  
          // Check for properties.
          if (rayTracingFound) {
-@@ -4183,6 +4735,7 @@ namespace plume {
+@@ -4183,6 +4767,7 @@ namespace plume {
  
          // Fill Vulkan-only capabilities.
          loadStoreOpNoneSupported = supportedOptionalExtensions.find(VK_EXT_LOAD_STORE_OP_NONE_EXTENSION_NAME) != supportedOptionalExtensions.end();
@@ -954,7 +993,7 @@ index fceae75..618813e 100644
  
          if (!nullDescriptorSupported) {
              nullBuffer = createBuffer(RenderBufferDesc::DefaultBuffer(16, RenderBufferFlag::VERTEX));
-@@ -4257,6 +4810,10 @@ namespace plume {
+@@ -4257,6 +4842,10 @@ namespace plume {
          return std::make_unique<VulkanQueryPool>(this, queryCount);
      }
  
@@ -966,7 +1005,7 @@ index fceae75..618813e 100644
          assert(meshes != nullptr);
          assert(meshCount > 0);
 diff --git a/plume_vulkan.h b/plume_vulkan.h
-index ec5c790..29f26b6 100644
+index ec5c790..10f140d 100644
 --- a/plume_vulkan.h
 +++ b/plume_vulkan.h
 @@ -129,9 +129,19 @@ namespace plume {
@@ -1020,10 +1059,21 @@ index ec5c790..29f26b6 100644
          virtual const uint64_t *getResults() const override;
          virtual uint32_t getCount() const override;
      };
-@@ -302,6 +323,26 @@ namespace plume {
+@@ -302,6 +323,37 @@ namespace plume {
          const VulkanPipelineLayout *activeGraphicsPipelineLayout = nullptr;
          const VulkanPipelineLayout *activeRaytracingPipelineLayout = nullptr;
          VkRenderPass activeRenderPass = VK_NULL_HANDLE;
++        // Occlusion queries begun inside the active render pass: they end with it at the latest (Vulkan
++        // requires a query begun in a render pass instance to end in it), and a later endQuery of one
++        // the pass end already closed does nothing.
++        struct PassQuery {
++            VkQueryPool pool = VK_NULL_HANDLE;
++            uint32_t index = 0;
++        };
++        std::vector<PassQuery> passQueries;
++        std::vector<PassQuery> passQueriesClosed;
++        // true: begin and end every query outside render passes (ends the active pass, as before).
++        bool queriesEndRenderPass = false;
 +        const VulkanFramebuffer *activeFramebuffer = nullptr;
 +        // Fable 2 lazy clears: full clears of whole images, applied as the load
 +        // action of the next pass that draws into the image, or done the old
@@ -1047,7 +1097,7 @@ index ec5c790..29f26b6 100644
  
          VulkanCommandList(VulkanCommandQueue *queue);
          ~VulkanCommandList() override;
-@@ -320,6 +361,7 @@ namespace plume {
+@@ -320,6 +372,7 @@ namespace plume {
          void setGraphicsPushConstants(uint32_t rangeIndex, const void *data, uint32_t offset = 0, uint32_t size = 0) override;
          void setGraphicsDescriptorSet(RenderDescriptorSet *descriptorSet, uint32_t setIndex) override;
          void setGraphicsRootDescriptor(RenderBufferReference bufferReference, uint32_t rootDescriptorIndex) override;
@@ -1055,7 +1105,7 @@ index ec5c790..29f26b6 100644
          void setRaytracingPipelineLayout(const RenderPipelineLayout *pipelineLayout) override;
          void setRaytracingPushConstants(uint32_t rangeIndex, const void *data, uint32_t offset = 0, uint32_t size = 0) override;
          void setRaytracingDescriptorSet(RenderDescriptorSet *descriptorSet, uint32_t setIndex) override;
-@@ -329,6 +371,8 @@ namespace plume {
+@@ -329,6 +382,8 @@ namespace plume {
          void setScissors(const RenderRect *scissorRects, uint32_t count) override;
          void setFramebuffer(const RenderFramebuffer *framebuffer) override;
          void setDepthBias(float depthBias, float depthBiasClamp, float slopeScaledDepthBias) override;
@@ -1064,7 +1114,7 @@ index ec5c790..29f26b6 100644
          void clearColor(uint32_t attachmentIndex, RenderColor colorValue, const RenderRect *clearRects, uint32_t clearRectsCount) override;
          void clearDepthStencil(bool clearDepth, bool clearStencil, float depthValue, uint32_t stencilValue, const RenderRect *clearRects, uint32_t clearRectsCount) override;
          void copyBufferRegion(RenderBufferReference dstBuffer, RenderBufferReference srcBuffer, uint64_t size) override;
-@@ -342,8 +386,14 @@ namespace plume {
+@@ -342,8 +397,14 @@ namespace plume {
          void discardTexture(const RenderTexture* texture) override;
          void resetQueryPool(const RenderQueryPool *queryPool, uint32_t queryFirstIndex, uint32_t queryCount) override;
          void writeTimestamp(const RenderQueryPool *queryPool, uint32_t queryIndex) override;
@@ -1080,7 +1130,7 @@ index ec5c790..29f26b6 100644
          void setDescriptorSet(VkPipelineBindPoint bindPoint, const VulkanPipelineLayout *pipelineLayout, const RenderDescriptorSet *descriptorSet, uint32_t setIndex);
      };
  
-@@ -413,10 +463,12 @@ namespace plume {
+@@ -413,10 +474,12 @@ namespace plume {
          std::vector<VulkanQueueFamily> queueFamilies;
          RenderDeviceCapabilities capabilities;
          RenderDeviceDescription description;
@@ -1093,7 +1143,7 @@ index ec5c790..29f26b6 100644
          bool nullDescriptorSupported = false;
  
          VulkanDevice(VulkanInterface *renderInterface, const std::string &preferredDeviceName);
-@@ -437,6 +489,7 @@ namespace plume {
+@@ -437,6 +500,7 @@ namespace plume {
          std::unique_ptr<RenderCommandSemaphore> createCommandSemaphore() override;
          std::unique_ptr<RenderFramebuffer> createFramebuffer(const RenderFramebufferDesc &desc) override;
          std::unique_ptr<RenderQueryPool> createQueryPool(uint32_t queryCount) override;
