@@ -11,6 +11,7 @@
 #include <rex/cvar.h>
 #include <rex/logging.h>
 
+#include <algorithm>
 #include <filesystem>
 #include <system_error>
 
@@ -18,6 +19,10 @@ REXCVAR_DEFINE_STRING(fable2_gpu_capture_trigger, "", "Fable2",
                       "Debug (macOS): capture one frame with Metal when this file appears");
 REXCVAR_DEFINE_STRING(fable2_gpu_capture_output, "", "Fable2",
                       "Debug (macOS): .gputrace path for fable2_gpu_capture_trigger");
+REXCVAR_DEFINE_INT32(fable2_gpu_capture_frames, 1, "Fable2",
+                     "Debug (macOS): frames one fable2_gpu_capture_trigger records (with MoltenVK's async "
+                     "submits a frame's Metal work can land after its present: use 2+, or "
+                     "MVK_CONFIG_SYNCHRONOUS_QUEUE_SUBMITS=1)");
 
 #if defined(__APPLE__)
 #include <objc/message.h>
@@ -43,6 +48,7 @@ id NSString(const char* text) {
 
 enum class State { kIdle, kCapturing };
 State g_state = State::kIdle;
+int g_frames_left = 0;
 id g_manager = nullptr;
 
 bool StartCapture(const std::string& output) {
@@ -84,7 +90,10 @@ void Fable2GpuCaptureOnPresent() {
     return;
   }
   if (g_state == State::kCapturing) {
-    // One whole frame (present to present) has been recorded.
+    if (--g_frames_left > 0) {
+      return;
+    }
+    // The requested frames (present to present) have been recorded.
     Send<void>(g_manager, "stopCapture");
     g_state = State::kIdle;
     REXLOG_INFO("GPU capture: finished");
@@ -101,6 +110,7 @@ void Fable2GpuCaptureOnPresent() {
   }
   if (StartCapture(output)) {
     g_state = State::kCapturing;
+    g_frames_left = std::max(1, REXCVAR_GET(fable2_gpu_capture_frames));
   }
 }
 
