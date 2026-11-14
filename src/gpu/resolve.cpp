@@ -45,6 +45,8 @@ REXCVAR_DEFINE_BOOL(fable2_bake_auto_mips, true, "Fable2",
                     "right after level 0 is resolved, instead of replaying the game's draw + resolve per level "
                     "(6 fewer render passes per texture)");
 REXCVAR_DECLARE(bool, fable2_diag_bake);
+REXCVAR_DEFINE_BOOL(fable2_debug_skip_shadow_resolves, false, "Fable2", "Debug: skip the 1024x1024 depth (shadow map) resolves (cost test)");
+REXCVAR_DEFINE_BOOL(fable2_diag_redirect, false, "Fable2", "Diagnostic: log depth resolves against the depth redirect's conditions");
 
 namespace eot::gpu {
 void NoteBakeSurface(u32 va);
@@ -451,6 +453,10 @@ static void ReplayResolveImplLocked(VideoState &s, const ResolvePacket &pk) {
   surf->perfResolves++;
   // Debug: skip the small colour resolves (256x256 k_8_8_8_8, per character in
   // Bowerstone town, most never sampled) to measure what they cost.
+  if (REXCVAR_GET(fable2_debug_skip_shadow_resolves) && depth_source && surf->width == 1024 && surf->height == 1024) {
+    s.perf.resolves_skipped_debug++;
+    return;
+  }
   if (REXCVAR_GET(fable2_debug_skip_small_resolves) && !depth_source && surf->width == 256 && surf->height == 256) {
     s.perf.resolves_skipped_debug++;
     return;
@@ -952,6 +958,23 @@ static void ReplayResolveImplLocked(VideoState &s, const ResolvePacket &pk) {
     }
     if (!depth_source && !pk.refresh)
       dest->lastResolve = std::make_shared<ResolvePacket>(pk);
+    if (depth_source && REXCVAR_GET(fable2_diag_redirect)) {
+      static u32 logged = 0;
+      if (logged < 24) {
+        ++logged;
+        EOT_INFO("[redirect] f {} src {:#x} {}x{} host {}x{} fmt {} -> dest {:#x} {}x{} host {}x{} fmt {} level {} "
+                 "whole {} cover {} ref {} depth {} renderable {} samples {}/{} mips {} passes {} atlas {} "
+                 "at_k {} at {},{}",
+                 s.guest_frames, src_va, surf->width, surf->height, surf->host.width, surf->host.height,
+                 static_cast<u32>(surf->host.format), dest_texture_va, dest->width, dest->height, dest->host.width,
+                 dest->host.height, static_cast<u32>(dest->host.format), dest_level, whole_src,
+                 vw == rw && vh == rh, dest_ref != nullptr, dest->host.isDepth, dest->host.renderable,
+                 surf->host.sampleCount, dest->host.sampleCount, dest->host.mipLevels,
+                 surf->redirectPassFrame == s.guest_frames ? surf->redirectPasses : 0,
+                 dest->host.width > surf->host.width || dest->host.height > surf->host.height,
+                 MirrorAtScale(*dest, surf->scale), ScalePxBy(vx, surf->scale), ScalePxBy(vy, surf->scale));
+      }
+    }
     if (depth_source && whole_src && dest_level == 0 && vw == rw && vh == rh &&
         surf->host.sampleCount == 1 && dest_ref && dest->host.isDepth && dest->host.renderable &&
         dest->host.sampleCount == 1 && dest->host.mipLevels == 1 && dest->host.arraySize == 1 &&
