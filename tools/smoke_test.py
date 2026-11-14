@@ -505,6 +505,8 @@ def main():
     ap.add_argument("--stop-on-nofetch", action="store_true", help="end the batch after a run that drew a no-fetch vertex shader")
     ap.add_argument("--diag", action="store_true", help="a per-draw diag frame in the log at the route shot")
     ap.add_argument("--full-shots", action="store_true", help="keep full-size PNG screenshots")
+    ap.add_argument("--save-set", default="", help="a frozen save folder (a copy of the saves' 4D5307F1 "
+                    "folder) used for the run instead of the live saves; the live saves are put back afterwards")
     ap.add_argument("--args", nargs=argparse.REMAINDER, default=[], help="extra game arguments (last)")
     o = ap.parse_args()
 
@@ -518,6 +520,9 @@ def main():
         run_dir = os.path.join(top, "run%d" % i)
         backup = os.path.join(top, "save_before_run%d" % i)
         shutil.copytree(SAVES, backup)
+        if o.save_set:
+            shutil.rmtree(SAVES)
+            shutil.copytree(os.path.expanduser(o.save_set), SAVES)
         digest = tree_digest(SAVES)
         r = Run(o, run_dir)
         error = None
@@ -530,10 +535,11 @@ def main():
             error = "interrupted"
         finally:
             r.stop()
-            if tree_digest(SAVES) != digest:
+            if o.save_set or tree_digest(SAVES) != digest:
                 shutil.rmtree(SAVES)
                 shutil.copytree(backup, SAVES)
-                r.notes.append("save folder restored")
+                if not o.save_set:
+                    r.notes.append("save folder restored")
             shutil.rmtree(backup)
         s = r.summary(error)
         with open(os.path.join(run_dir, "summary.json"), "w") as f:
