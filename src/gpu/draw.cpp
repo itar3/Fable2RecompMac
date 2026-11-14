@@ -73,6 +73,8 @@ REXCVAR_DEFINE_BOOL(fable2_diag_morph, false, "Fable2",
 REXCVAR_DEFINE_BOOL(fable2_pool_spare, true, "Fable2", "Native renderer: geometry cache pools make their next chunk ahead on a background thread");
 REXCVAR_DEFINE_BOOL(fable2_pull_mirrors, true, "Fable2", "Native renderer: vertex-pulled stream buffers come from the mirror cache instead of a copy per draw");
 REXCVAR_DEFINE_BOOL(fable2_debug_skip_256_draws, false, "Fable2", "Debug: skip colour draws into 256-pixel-wide targets (cost test)");
+REXCVAR_DEFINE_BOOL(fable2_debug_query_boxes_twice, false, "Fable2",
+                    "Debug: the occlusion query pass draws each box twice (cost test)");
 REXCVAR_DEFINE_BOOL(fable2_diag_bake, false, "Fable2",
                     "Diagnostic: log the per-character 256x256 texture bake draws (input hashes) and resolves");
 REXCVAR_DEFINE_BOOL(fable2_debug_skip_bake_chains, false, "Fable2",
@@ -4819,6 +4821,9 @@ void ReplayDraw(VideoState &s, const DrawPacket &pk) {
     cmd->drawIndexedInstanced(index_count, 1, 0, pk.host_base_vertex, 0);
   } else {
     cmd->drawInstanced(pk.vertexCount, 1, static_cast<u32>(pk.host_base_vertex), 0);
+    // Cost test: the occlusion query boxes drawn twice (visible stays visible).
+    if (REXCVAR_GET(fable2_debug_query_boxes_twice) && vs->hash == 0x8f1c881c15849337ull)
+      cmd->drawInstanced(pk.vertexCount, 1, static_cast<u32>(pk.host_base_vertex), 0);
   }
   lap(s.perf.record_ms);
   if (Settings::DiagFrame() > 0 && s.guest_frames + 1 == static_cast<u64>(Settings::DiagFrame()) && ProbeArmed())

@@ -38,6 +38,9 @@
 REXCVAR_DECLARE(bool, fable2_diag_pass_timing);
 REXCVAR_DEFINE_BOOL(fable2_gpu_timing, true, "Fable2",
                     "Native renderer: per-frame GPU timing by category (timestamps between draws of different kinds)");
+REXCVAR_DEFINE_INT32(fable2_gpu_timing_every, 8, "Fable2",
+                     "Native renderer: GPU timing on one frame in N (each timestamp is a GPU counter sample of its "
+                     "own on Apple GPUs, ~180 a frame; the [perf] GPU figures average the timed frames)");
 
 namespace eot::gpu {
 
@@ -148,10 +151,15 @@ std::string GpuCategoryName(u32 cat) {
                      add ? "+add" : "", full && !ms ? "@1x" : "");
 }
 
+bool DiagFrameNow(const VideoState &s);
+
 void GpuTimingFrameBegin(VideoState &s, plume::RenderCommandList *cmd, u32 slot) {
   if (!g_supported || !s.device || !cmd)
     return;
-  if (!REXCVAR_GET(fable2_gpu_timing)) {
+  static u64 frames = 0;
+  const i32 every = REXCVAR_GET(fable2_gpu_timing_every);
+  const bool sampled = every <= 1 || (frames++ % static_cast<u64>(every)) == 0 || DiagFrameNow(s);
+  if (!REXCVAR_GET(fable2_gpu_timing) || !sampled) {
     g_open = false;
     g_slots[slot].pending = false;
     return;

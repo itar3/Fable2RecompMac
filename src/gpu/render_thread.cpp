@@ -149,10 +149,13 @@ void Execute(VideoState &s, Queue &q, RenderCommand &c) {
     if (c.seq && c.seq == g_prerun_resolve_seq && REXCVAR_GET(fable2_zpass_skip_late_resolve) &&
         !(c.resolve.flags & 0x300)) {
       // Same draws, same start depth (put back after the Z pass): same result.
+      // No chunk submit here either: it is mid-scene, and a submit would end
+      // the colour pass (store + reload of the MSAA targets) all the same.
       s.perf.resolve_noops++;
-    } else {
-      ReplayResolveLocked(s, c.resolve);
+      PublishExecuted(q, c.seq);
+      break;
     }
+    ReplayResolveLocked(s, c.resolve);
     PublishExecuted(q, c.seq);  // the hero/dog texture resolves are waited for
     MaybeSubmitChunkLocked(s);
     break;
