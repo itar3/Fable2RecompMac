@@ -1114,7 +1114,7 @@ when a factor is a finite nonzero literal (rare: 3 of 83 in the cliff shader).
 `fable2_zero_mul=false` "saves" ~1.9 ms only by losing geometry to NaN
 (see 2026-11-06): never a lever.
 
-`fable2_scene_keeps_zpass_depth` (off, 3db3ed92): the opaque scene keeps the
+`fable2_scene_keeps_zpass_depth` (ON by default since the next commit, user decision; was off in 3db3ed92): the opaque scene keeps the
 emulated Z pass's depth; camp 17.09 -> 16.43 ms, same objects. Not exact: the
 11 ground-shadow quads (vs e6415e83 ps d2cc2e1c) are the only depth writers
 without stencil drawn after stencil writers in the opaque scene; stencil marks
