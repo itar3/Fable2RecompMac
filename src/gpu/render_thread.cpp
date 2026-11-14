@@ -39,7 +39,7 @@ REXCVAR_DECLARE(bool, fable2_zpass_restore_depth);
 // thread's next frame overlapped the render thread's end-of-frame work (frame
 // slot recycling, texture/buffer retirement, bookkeeping), which is not safe
 // against concurrent capture yet.
-REXCVAR_DEFINE_BOOL(fable2_scene_keeps_zpass_depth, false, "Fable2",
+REXCVAR_DEFINE_BOOL(fable2_scene_keeps_zpass_depth, true, "Fable2",
                     "Native renderer: the scene's opaque draws keep the emulated Z pass's depth (hidden "
                     "fragments, alpha-tested ones too, are rejected before shading; strict depth tests of "
                     "depth-writing draws become or-equal)");
