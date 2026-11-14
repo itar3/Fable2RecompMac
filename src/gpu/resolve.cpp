@@ -38,6 +38,8 @@ REXCVAR_DECLARE(bool, fable2_debug_hero_composite);
 REXCVAR_DECLARE(bool, fable2_texture_as_recorded);
 REXCVAR_DECLARE(bool, fable2_render_targets_by_storage);
 REXCVAR_DECLARE(bool, fable2_debug_skip_bake_chains);
+REXCVAR_DEFINE_BOOL(fable2_debug_skip_auto_mip_build, false, "Fable2",
+                    "Debug: fable2_bake_auto_mips drops the game's mip passes but builds none (cost test)");
 REXCVAR_DEFINE_BOOL(fable2_bake_auto_mips, true, "Fable2",
                     "Native renderer: the per-character 256x256 textures get their mip levels built on the GPU "
                     "right after level 0 is resolved, instead of replaying the game's draw + resolve per level "
@@ -406,7 +408,8 @@ void ReplayResolveLocked(VideoState &s, const ResolvePacket &pk) {
   if (s.ready && s.command_list_open)
     RunPendingTextureDumpsLocked(s);
   ReplayResolveImplLocked(s, pk);
-  if (pk.autoMipLevels > 1 && s.ready && !pk.clearDestOnly && s.command_list_open)
+  if (pk.autoMipLevels > 1 && s.ready && !pk.clearDestOnly && s.command_list_open &&
+      !REXCVAR_GET(fable2_debug_skip_auto_mip_build))
     if (GuestTexture *dest = ResolveDestination(s, pk))
       GenerateMipsLocked(s, *dest, pk.autoMipLevels, ResolveQuantizeBits(dest->format));
   if (s.ready && !pk.clearDestOnly && pk.destVa && s.command_list_open)

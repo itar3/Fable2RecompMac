@@ -39,6 +39,9 @@ REXCVAR_DECLARE(bool, fable2_zpass_restore_depth);
 // thread's next frame overlapped the render thread's end-of-frame work (frame
 // slot recycling, texture/buffer retirement, bookkeeping), which is not safe
 // against concurrent capture yet.
+REXCVAR_DEFINE_BOOL(fable2_zpass_skip_late_resolve, true, "Fable2",
+                    "Native renderer: the game's own scene depth resolve is skipped when the emulated Z pass "
+                    "already made it from the same draws (the scene's colour pass then stays one render pass)");
 REXCVAR_DEFINE_BOOL(fable2_render_spin, false, "Fable2",
                     "Native renderer: the render thread spins while it waits for work (old behaviour) "
                     "instead of sleeping in short steps");
@@ -121,6 +124,8 @@ void PublishExecuted(Queue &q, u64 seq) {
 // (RenderThreadPresentSubmitted), so the game thread starts its next frame
 // while the render thread waits for the GPU fence and does its bookkeeping.
 u64 g_present_seq = 0;
+// The depth resolve the emulated Z pass ran early this frame (its queue seq).
+u64 g_prerun_resolve_seq = 0;
 
 void Prefetch(const RenderCommand &c) {
   const auto *base = reinterpret_cast<const char *>(&c);
@@ -141,7 +146,13 @@ void Execute(VideoState &s, Queue &q, RenderCommand &c) {
     ReplayClearLocked(s, c.clear);
     break;
   case RenderCommandType::Resolve:
-    ReplayResolveLocked(s, c.resolve);
+    if (c.seq && c.seq == g_prerun_resolve_seq && REXCVAR_GET(fable2_zpass_skip_late_resolve) &&
+        !(c.resolve.flags & 0x300)) {
+      // Same draws, same start depth (put back after the Z pass): same result.
+      s.perf.resolve_noops++;
+    } else {
+      ReplayResolveLocked(s, c.resolve);
+    }
     PublishExecuted(q, c.seq);  // the hero/dog texture resolves are waited for
     MaybeSubmitChunkLocked(s);
     break;
@@ -356,6 +367,13 @@ void DepthPrerun(VideoState &s, Queue &q, u64 head) {
   }
   s.depth_prerun = false;
   ReplayResolveLocked(s, depth);
+  g_prerun_resolve_seq = q.slots[found & kQueueMask].seq;
+  {
+    static u32 logged = 0;
+    if (logged++ < 2)
+      EOT_INFO("[zpass] scene depth resolve flags {:#x} (late copy {})", depth.flags,
+               depth.flags & 0x300 ? "kept: it clears" : "skippable");
+  }
   if (dimg && dimg->texture.get() == dimg_texture) {
     if (saved && s.command_list_open) {
       const HostTextureTransition transitions[] = {{&spare, plume::RenderTextureLayout::COPY_SOURCE},

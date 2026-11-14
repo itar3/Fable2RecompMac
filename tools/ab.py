@@ -25,6 +25,7 @@ def toggle(build, name, values, period, duration):
 GAME = re.compile(r"cpu ms/frame: game ([0-9.]+)")
 TS = re.compile(r"^\[(\d+-\d+-\d+ \d+:\d+:\d+\.\d+)\]")
 PERF = re.compile(r"\[perf\] \d+ frames, ([0-9.]+) ms/frame wall.*?\((\d+) draws.*?gpu ([0-9.]+) ms/frame: small 16f\+z ([0-9.]+)")
+PERF_NOGPU = re.compile(r"\[perf\] \d+ frames, ([0-9.]+) ms/frame wall.*?\((\d+) draws")  # GPU timing off
 
 def analyse(log, name, min_draws=1800):
     state = None
@@ -37,12 +38,15 @@ def analyse(log, name, min_draws=1800):
                 fresh = True
                 continue
             m = PERF.search(line)
-            if not m or state is None:
+            fields = (m.group(1), m.group(2), m.group(3), m.group(4)) if m else None
+            if not m and "[perf]" in line and (m2 := PERF_NOGPU.search(line)):
+                fields = (m2.group(1), m2.group(2), "nan", "nan")
+            if not fields or state is None:
                 continue
             if fresh:  # this interval spans the switch
                 fresh = False
                 continue
-            wall, draws, gpu, main = float(m.group(1)), int(m.group(2)), float(m.group(3)), float(m.group(4))
+            wall, draws, gpu, main = float(fields[0]), int(fields[1]), float(fields[2]), float(fields[3])
             if draws < min_draws:
                 continue
             g = GAME.search(line)
