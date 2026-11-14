@@ -976,3 +976,22 @@ Left off: `non_argument_as_local` (r0, r2, r11, r12, f0, v32-63). ~120 funclets
 get their owner's frame in r12, and the option has no per-function exception;
 it needs a hook pair per funclet call or an SDK change. `skip_lr` stays off:
 hooks tell call sites apart by the link register.
+
+## 2026-11-14: Gypsy Camp pass list (next GPU lever, not started)
+
+`out/diag/run_card.sh tile_c9 9 0 -- --diag-world` + `out/diag/passes.py LOG`:
+the camp frame has **140 render passes**. The scene is not drawn per tile
+(Z pre-pass 755 draws, colour 755 + 596). 80 of the passes are ten identical
+8-pass chains at the start of the frame: a 256x256 texture bake (1-2 draws
+from three 1024x1024 sources into surface 0x407bea00/0x407be9a0 with depth),
+a resolve to mip 0 of a texture, then three single-quad mip passes
+(vs a108f279e72a396b, ps 2cb8bcd53db53c93) each followed by a resolve to mips
+1-3 of the same texture. Every resolve is its own render pass (hand-off gate:
+`whole_host false covers false`). Likely per-character work (ten NPCs).
+To do: (1) do the same ten textures get baked every frame (then cache or
+throttle)? (2) draw the mip quads straight into the destination mip (redirect)
+or hand the surface image off: 80 passes -> 40 or fewer; (3) per-pass GPU cost
+is ~50 us, so this is ~2-4 ms of the 18.
+Also seen: **123 dropped draws a frame, "point sprites not supported yet"**
+(vs 0x4cc113b0 / 0x4c139590), inside those chains: something the game draws
+is missing from the picture; find out what.
