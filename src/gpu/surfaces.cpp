@@ -26,6 +26,7 @@
 #include "gpu/gpu_timing.h"
 #include "gpu/memory_report.h"
 #include "gpu/settings.h"
+#include "gpu/textures.h"
 
 #include <rex/cvar.h>
 REXCVAR_DEFINE_BOOL(fable2_full_height_1120, true, "Fable2",
@@ -541,6 +542,48 @@ bool HelperBlit(VideoState &s, HostTexture &src, HostTexture &dst, plume::Render
   HelperPassDone(s);
   return true;
 }
+
+}  // namespace
+
+void GenerateMipsLocked(VideoState &s, GuestTexture &t, u32 levels, u32 quantize_bits) {
+  HostTexture &host = t.host;
+  levels = std::min(levels, host.mipLevels);
+  if (levels < 2 || !host.valid() || host.isDepth || host.sampleCount > 1 || host.arraySize != 1 ||
+      host.depth != 1)
+    return;
+  plume::RenderPipeline *pso = GetBlitPipeline(s, host.format, 1);
+  if (!pso)
+    return;
+  // One image is read (level m - 1) and written (level m) by the same pass:
+  // GENERAL for the whole image (Metal has no layouts; different levels).
+  TransitionLocked(s, host, plume::RenderTextureLayout::GENERAL);
+  CopyPushConstants pc;
+  pc.resourceDescriptorIndex = BindTextureSRVLocked(s, host);
+  pc.resourceDescriptorIndex2 = 0;  // the image's own storage order in and out
+  pc.extra[0] = 4.0f;  // blit_ps: one bilinear sample of level extra[1]
+  pc.extra[2] = static_cast<float>(quantize_bits);
+  auto *cmd = s.command_list;
+  for (u32 m = 1; m < levels; ++m) {
+    plume::RenderFramebuffer *fb = GetMipFramebuffer(s, t, m);
+    if (!fb)
+      break;
+    BindHelperFramebuffer(s, fb);
+    cmd->setPipeline(pso);
+    const u32 w = std::max(1u, host.width >> m), h = std::max(1u, host.height >> m);
+    const plume::RenderViewport vp(0.0f, 0.0f, static_cast<float>(w), static_cast<float>(h), 0.0f, 1.0f);
+    const plume::RenderRect sc(0, 0, static_cast<i32>(w), static_cast<i32>(h));
+    cmd->setViewports(&vp, 1);
+    cmd->setScissors(&sc, 1);
+    pc.extra[1] = static_cast<float>(m - 1);
+    cmd->setGraphicsPushConstants(kCopyPushConstantRangeIndex, &pc, kCopyPushConstantByteOffset, sizeof(pc));
+    cmd->drawInstanced(3, 1, 0, 0);
+    HelperPassDone(s);
+    t.resolvedMipMask |= 1u << m;
+  }
+  host.needsClear = false;
+}
+
+namespace {
 
 bool ClearImageToRemembered(VideoState &s, GuestSurface &surf, HostTexture &image) {
   plume::RenderFramebuffer *fb = ImageFramebuffer(s, image);

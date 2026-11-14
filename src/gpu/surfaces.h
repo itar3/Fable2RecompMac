@@ -22,6 +22,9 @@ bool IsShadowTile(const GuestSurface &surface);
 const plume::RenderTextureView *DepthTargetView(VideoState &s, HostTexture &host);
 
 GuestSurface *FindMultisampleAliasSource(VideoState &s, const GuestSurface &alias);
+// Builds levels 1..levels-1 of t's host image from level 0 (2:1 bilinear).
+// quantize_bits: as ResolveQuantizeBits (the game resolves each level into a narrower format).
+void GenerateMipsLocked(VideoState &s, GuestTexture &t, u32 levels, u32 quantize_bits);
 
 plume::RenderFramebuffer *GetFramebuffer(VideoState &s, HostTexture *const color[4],
                                          u32 color_count, HostTexture *depth);

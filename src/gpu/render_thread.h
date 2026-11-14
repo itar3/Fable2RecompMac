@@ -171,6 +171,7 @@ struct ResolvePacket {
   u32 destFetch[6] = {};  // the destination's header when the resolve was recorded
   bool hasDestFetch = false;
   u32 destLevel = 0;
+  u32 autoMipLevels = 0;  // > 1: build levels 1.. from level 0 after this resolve (fable2_bake_auto_mips)
   bool hasRect = false;
   i32 rect[4] = {};
   bool hasPoint = false;

@@ -129,6 +129,11 @@ float4 main(in float4 position : SV_Position, in float2 texCoord : TEXCOORD) : S
     {
         s = CatmullRomUpsample(tex, g_SamplerDescriptorHeap[0u], uv, float2(w, h));
     }
+    else if (mode == 4u)
+    {
+        // Mip build: level Extra.y, bilinear at the corner of 2x2 texels.
+        s = tex.SampleLevel(g_SamplerDescriptorHeap[0u], uv, g_PushConstants.Extra.y);
+    }
     else
     {
         float2 texels_per_pixel = float2(ddx(uv.x) * w, ddy(uv.y) * h);

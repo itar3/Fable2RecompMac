@@ -523,6 +523,11 @@ def main():
         if o.save_set:
             shutil.rmtree(SAVES)
             shutil.copytree(os.path.expanduser(o.save_set), SAVES)
+            for root, dirs, files in os.walk(SAVES):  # frozen sets are read-only; the game writes
+                for n in dirs + files:
+                    p = os.path.join(root, n)
+                    os.chmod(p, os.stat(p).st_mode | 0o200)
+            os.chmod(SAVES, os.stat(SAVES).st_mode | 0o200)
         digest = tree_digest(SAVES)
         r = Run(o, run_dir)
         error = None

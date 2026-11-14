@@ -73,6 +73,10 @@ REXCVAR_DEFINE_BOOL(fable2_diag_morph, false, "Fable2",
 REXCVAR_DEFINE_BOOL(fable2_pool_spare, true, "Fable2", "Native renderer: geometry cache pools make their next chunk ahead on a background thread");
 REXCVAR_DEFINE_BOOL(fable2_pull_mirrors, true, "Fable2", "Native renderer: vertex-pulled stream buffers come from the mirror cache instead of a copy per draw");
 REXCVAR_DEFINE_BOOL(fable2_debug_skip_256_draws, false, "Fable2", "Debug: skip colour draws into 256-pixel-wide targets (cost test)");
+REXCVAR_DEFINE_BOOL(fable2_diag_bake, false, "Fable2",
+                    "Diagnostic: log the per-character 256x256 texture bake draws (input hashes) and resolves");
+REXCVAR_DEFINE_BOOL(fable2_debug_skip_bake_chains, false, "Fable2",
+                    "Debug: skip the per-character 256x256 texture bakes, their mip passes and resolves (cost test)");
 REXCVAR_DEFINE_BOOL(fable2_diag_shadow_seq, false, "Fable2", "Diagnostic: log one frame's shadow-pass draws in order with their pixel shaders");
 REXCVAR_DEFINE_BOOL(fable2_diag_shadow_mask, false, "Fable2", "Diagnostic: whether the shadow mask samples this frame's shadow maps");
 REXCVAR_DEFINE_STRING(fable2_debug_shadow_skip_vs, "", "Fable2", "Debug: vertex shader hashes not drawn into shadow maps");
@@ -208,6 +212,26 @@ REXCVAR_DEFINE_BOOL(fable2_skip_point_lists, true, "Fable2",
 
 namespace eot::gpu {
 std::atomic<u64> g_pop_events{0}, g_pop_draws{0};
+// Diagnostic (fable2_diag_bake): surfaces whose resolve fills mip 0 of a texture
+// whose next mips are resolved right after (the per-character texture bakes).
+static std::atomic<u32> g_bake_surfaces[32];
+void NoteBakeSurface(u32 va) {
+  for (auto &slot : g_bake_surfaces) {
+    u32 cur = slot.load(std::memory_order_relaxed);
+    if (cur == va)
+      return;
+    if (!cur && slot.compare_exchange_strong(cur, va))
+      return;
+  }
+}
+bool AutoMipChainTakesDraw(u64 ps_hash);
+void AutoMipChainOtherCommand();
+bool IsBakeSurface(u32 va) {
+  for (auto &slot : g_bake_surfaces)
+    if (slot.load(std::memory_order_relaxed) == va)
+      return true;
+  return false;
+}
 }
 
 namespace eot::gpu {
@@ -2992,6 +3016,8 @@ bool CaptureDraw(VideoState &s, u32 device_va, u32 prim, GeometryPlan &geom,
   }
   pk.vs = vs;
   pk.ps = ps;
+  if (AutoMipChainTakesDraw(ps ? ps->hash : 0))
+    return false;  // fable2_bake_auto_mips: this level is built from level 0
   pk.hasCameraVP = false;
   if (Settings::Taa() || Settings::DiagVerbosity() >= 2) {
     struct CameraByTarget {
@@ -3072,7 +3098,8 @@ bool CaptureDraw(VideoState &s, u32 device_va, u32 prim, GeometryPlan &geom,
     Dropped("no render target or depth surface bound", 0x6003);
     return false;
   }
-  if (REXCVAR_GET(fable2_debug_skip_256_draws) && pk.targets.colorCount) {
+  if ((REXCVAR_GET(fable2_debug_skip_256_draws) || REXCVAR_GET(fable2_debug_skip_bake_chains)) &&
+      pk.targets.colorCount) {
     // Debug: the per-character 256x256 renders in Bowerstone town (cost test).
     const u32 info = dev.U32(dev::kSurfaceInfo);
     if ((info & 0x3FFF) == 256) {
@@ -3525,6 +3552,24 @@ bool CaptureDraw(VideoState &s, u32 device_va, u32 prim, GeometryPlan &geom,
     }
     EOT_INFO("[diag]   rect verts (next draw){}", verts);
   }
+  if (REXCVAR_GET(fable2_diag_bake) && pk.targets.colorCount && IsBakeSurface(pk.targets.colorVa[0])) {
+    static u32 lines = 0;
+    if (lines < 6000) {
+      ++lines;
+      auto h = [&](u32 off, u32 bytes) -> u64 {
+        const u8 *p = dev.Bytes(off, bytes);
+        return p ? XXH3_64bits(p, bytes) : 0;
+      };
+      const u32 vregs = vs ? std::clamp(vs->floatConstantRegs, 16u, 256u) : 256u;
+      const u32 pregs = ps ? std::clamp(ps->floatConstantRegs, 16u, 256u) : 16u;
+      const u64 hi = pk.index_alloc.cpu && pk.index_alloc.size ? XXH3_64bits(pk.index_alloc.cpu, pk.index_alloc.size) : 0;
+      EOT_INFO("[bake] f {} draw rt0 {:#x} vs {:#x} ps {:#x} n {} fetch {:016x} vsc {:016x} psc {:016x} "
+               "state {:016x} idx {:016x}",
+               s.guest_frames, pk.targets.colorVa[0], vs_va, ps_va, pk.indexed ? pk.index_count : pk.vertexCount,
+               h(dev::kFetchConstants, 0x300), h(dev::kVsFloatConstants, vregs * 16),
+               h(dev::kPsFloatConstants, pregs * 16), h(0x2780, 0x2A60 - 0x2780), hi);
+    }
+  }
   return true;
 }
 
@@ -3760,6 +3805,10 @@ void ReplayDraw(VideoState &s, const DrawPacket &pk) {
     if (!REXCVAR_GET(fable2_skip_vs).empty() &&
         DrawMatchesList(REXCVAR_GET(fable2_skip_vs), vs->hash, pk.indexed ? pk.index_count : pk.vertexCount)) {
       Dropped("vertex shader skipped (fable2_skip_vs)", 0x6033);
+      return;
+    }
+    if (ps && ps->hash == 0x2cb8bcd53db53c93ull && REXCVAR_GET(fable2_debug_skip_bake_chains)) {
+      Dropped("bake chain mip pass skipped (fable2_debug_skip_bake_chains)", 0x6034);
       return;
     }
     if (ps && !REXCVAR_GET(fable2_skip_ps).empty()) {
@@ -5163,6 +5212,7 @@ namespace {
 
 bool CaptureClear(u32 device_va, u32 flags, u32 rect_va, u32 color_va, float z, u32 stencil,
                   ClearPacket &pk) {
+  AutoMipChainOtherCommand();
   pk = ClearPacket{};
   pk.device_va = device_va;
   pk.flags = flags;

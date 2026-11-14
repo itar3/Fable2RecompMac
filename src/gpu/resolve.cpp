@@ -11,6 +11,7 @@
 #include <mutex>
 #include <string>
 
+#include <rex/graphics/pipeline/texture/info.h>
 #include <rex/graphics/pipeline/texture/util.h>
 #include <rex/graphics/xenos.h>
 
@@ -36,8 +37,58 @@
 REXCVAR_DECLARE(bool, fable2_debug_hero_composite);
 REXCVAR_DECLARE(bool, fable2_texture_as_recorded);
 REXCVAR_DECLARE(bool, fable2_render_targets_by_storage);
+REXCVAR_DECLARE(bool, fable2_debug_skip_bake_chains);
+REXCVAR_DEFINE_BOOL(fable2_bake_auto_mips, true, "Fable2",
+                    "Native renderer: the per-character 256x256 textures get their mip levels built on the GPU "
+                    "right after level 0 is resolved, instead of replaying the game's draw + resolve per level "
+                    "(6 fewer render passes per texture)");
+REXCVAR_DECLARE(bool, fable2_diag_bake);
 
 namespace eot::gpu {
+void NoteBakeSurface(u32 va);
+
+// fable2_bake_auto_mips. Fable 2 renders ~12 characters a frame into 256x256
+// k_8_8_8_8 textures with 4 levels, then builds levels 1-3 itself: per level, a
+// bilinear quad (ps 2cb8bcd53db53c93) sampling the level above into a scratch
+// surface and a resolve into the level. On the Xbox that is cheap; here every
+// draw and every resolve is a render pass (~26 us each on the GPU). The
+// capture side drops that sequence and the level-0 resolve's replay builds the
+// levels on the GPU from level 0 instead (a 2:1 bilinear sample = the game's).
+// Game thread only (draw and resolve capture).
+namespace {
+constexpr u64 kBakeMipPs = 0x2cb8bcd53db53c93ull;
+struct AutoMipChain {
+  u32 destVa = 0;     // 0 = no chain open
+  u32 nextLevel = 0;  // the level whose draw + resolve come next
+  u32 levels = 0;
+  bool drawTaken = false;  // that level's draw was dropped; its resolve is due
+} g_auto_mip;
+u64 g_auto_mip_breaks = 0;
+
+void AutoMipChainBreak(const char *why) {
+  if (g_auto_mip.drawTaken && (g_auto_mip_breaks++ & 1023) == 0)
+    EOT_WARN("[auto-mips] chain into {:#x} broken at level {} ({}); a mip draw was already dropped",
+             g_auto_mip.destVa, g_auto_mip.nextLevel, why);
+  g_auto_mip = AutoMipChain{};
+}
+}  // namespace
+
+// Called for every captured draw while a chain is open: true = drop the draw.
+bool AutoMipChainTakesDraw(u64 ps_hash) {
+  if (!g_auto_mip.destVa)
+    return false;
+  if (ps_hash == kBakeMipPs && !g_auto_mip.drawTaken) {
+    g_auto_mip.drawTaken = true;
+    state().perf.auto_mip_skips++;
+    return true;
+  }
+  AutoMipChainBreak("another draw");
+  return false;
+}
+void AutoMipChainOtherCommand() {
+  if (g_auto_mip.destVa)
+    AutoMipChainBreak("another command");
+}
 
 namespace xe = rex::graphics::xenos;
 namespace tu = rex::graphics::texture_util;
@@ -205,6 +256,53 @@ bool CaptureResolve(u32 device_va, u32 flags, u32 src_rect_va, u32 dest_texture_
     for (u32 i = 0; i < 4; ++i)
       pk.rgba[i] = mem::f32at(clear_color_va + 4 * i);
   }
+  if (REXCVAR_GET(fable2_diag_bake) && pk.destVa) {
+    static u32 last_dest = 0, last_src = 0;
+    if (pk.destLevel == 0) {
+      last_dest = pk.destVa;
+      last_src = pk.srcVa;
+    } else if (pk.destLevel == 1 && pk.destVa == last_dest && last_src) {
+      NoteBakeSurface(last_src);
+    }
+    static u32 lines = 0;
+    if (lines < 3000) {
+      ++lines;
+      EOT_INFO("[bake] f {} resolve src {:#x} dest {:#x} level {} rect {}", state().guest_frames, pk.srcVa, pk.destVa,
+               pk.destLevel, pk.hasRect ? pk.rect[2] : -1);
+    }
+  }
+  if (g_auto_mip.destVa) {
+    if (!depth_source && pk.destVa == g_auto_mip.destVa && dest_level == g_auto_mip.nextLevel &&
+        g_auto_mip.drawTaken) {
+      state().perf.auto_mip_skips++;
+      g_auto_mip.drawTaken = false;
+      if (++g_auto_mip.nextLevel >= g_auto_mip.levels)
+        g_auto_mip = AutoMipChain{};
+      return false;  // built from level 0 already
+    }
+    AutoMipChainBreak("another resolve");
+  }
+  if (REXCVAR_GET(fable2_bake_auto_mips) && !depth_source && dest_level == 0 && pk.hasDestFetch &&
+      !pk.hasRect && !pk.hasPoint) {
+    rex::graphics::xenos::xe_gpu_texture_fetch_t f;
+    std::memcpy(&f, pk.destFetch, sizeof(f));
+    rex::graphics::TextureInfo info{};
+    const bool prepared = rex::graphics::TextureInfo::Prepare(f, &info);
+    if (prepared && info.width + 1 == 256 && REXCVAR_GET(fable2_diag_bake)) {
+      static u32 n = 0;
+      if (n++ < 40)
+        EOT_INFO("[auto-mips] candidate {:#x}: {}x{} depth {} dim {} mips {}-{} fmt {} rect {} point {}", pk.destVa,
+                 info.width + 1, info.height + 1, info.depth + 1, static_cast<u32>(info.dimension),
+                 info.mip_min_level, info.mip_max_level, static_cast<u32>(info.format), pk.hasRect, pk.hasPoint);
+    }
+    if (prepared && info.width + 1 == 256 && info.height + 1 == 256 &&
+        info.dimension == xe::DataDimension::k2DOrStacked && info.depth == 0 && info.mip_min_level == 0 &&
+        info.mip_max_level >= 1 &&
+        (info.format == xe::TextureFormat::k_1_5_5_5 || info.format == xe::TextureFormat::k_8_8_8_8)) {
+      pk.autoMipLevels = info.mip_max_level + 1;
+      g_auto_mip = AutoMipChain{pk.destVa, 1, pk.autoMipLevels, false};
+    }
+  }
   if ((flags & 0x200) && !depth_source) {
     pk.dsVa = dev.U32(dev::kDepthSurface);
     if (pk.dsVa && !ReadSurfaceHeaderWords(pk.dsVa, pk.dsWords))
@@ -308,6 +406,9 @@ void ReplayResolveLocked(VideoState &s, const ResolvePacket &pk) {
   if (s.ready && s.command_list_open)
     RunPendingTextureDumpsLocked(s);
   ReplayResolveImplLocked(s, pk);
+  if (pk.autoMipLevels > 1 && s.ready && !pk.clearDestOnly && s.command_list_open)
+    if (GuestTexture *dest = ResolveDestination(s, pk))
+      GenerateMipsLocked(s, *dest, pk.autoMipLevels, ResolveQuantizeBits(dest->format));
   if (s.ready && !pk.clearDestOnly && pk.destVa && s.command_list_open)
     if (GuestTexture *dest = ResolveDestination(s, pk))
       if (QueueResolveWritebackLocked(s, *dest))
@@ -388,6 +489,11 @@ static void ReplayResolveImplLocked(VideoState &s, const ResolvePacket &pk) {
     EOT_CPU_ZONE("resolve destination mirror");
     PerfScope mirror_scope(s.perf.resolve_mirror_ms);
     dest = dest_texture_va ? ResolveDestination(s, pk) : nullptr;
+    if (dest && !depth_source && REXCVAR_GET(fable2_debug_skip_bake_chains) && dest->width == 256 &&
+        dest->height == 256 && dest->mipLevels > 1) {
+      s.perf.resolves_skipped_debug++;
+      return;
+    }
     if (dest && !EnsureResolveMirror(s, *dest, depth_source, surf->scale,
                                      depth_source ? surf->host.format : plume::RenderFormat::UNKNOWN))
       dest = nullptr;

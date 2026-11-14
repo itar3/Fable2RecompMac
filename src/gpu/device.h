@@ -85,6 +85,7 @@ struct PerfCounters {
   u32 hero_resolve_waits = 0;
   u32 chunk_submits = 0;
   u32 resolves_skipped_debug = 0;
+  u32 auto_mip_skips = 0;  // game mip draws + resolves replaced by fable2_bake_auto_mips
   f64 pace_ms = 0;
   u32 draws = 0, resolves = 0, uploads = 0, links = 0, psos = 0, frames = 0;
   u32 uploads_new = 0, uploads_again = 0, uploads_refresh = 0;
