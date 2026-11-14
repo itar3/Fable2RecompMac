@@ -1020,3 +1020,27 @@ save 2 more passes per chain (~0.6 ms); rendering the bake straight into level
 The "123 dropped point sprite draws" are the memexport passes (never visible)
 and the night sky's stars (vs 867a1ee73bc31ea7 / ps e14feb99dd4adc46, 512
 points, g_StarParams): stars are missing at night, not a cost.
+
+## 2026-11-14: one scene colour pass (camp -0.3 ms) and where the frame stands
+
+The emulated Z pass replays exactly the scene's depth draws (`[zpass] ... 0
+left out`) from the same start depth and runs the game's scene depth resolve
+early (flags 0x14, no clear); the game's own resolve then ran again between the
+opaque and the transparent draws with the same result and split the colour
+pass in two (store + reload of the 2x MSAA colour and depth, ~170 MB).
+`fable2_zpass_skip_late_resolve` (default on, 9986cb3f) skips it. Camp A/B
+16.86 -> 16.55 ms. No clears inside the colour pass (checked in a diag frame).
+
+Small-pass cost is not uniform: our own helper passes (`GenerateMipsLocked`,
+36 a frame) cost ~0 (`fable2_debug_skip_auto_mip_build` A/B), the 12 remaining
+game level-0 resolves ~0.36 ms, GPU timing marks ~0.2 ms (noise). The game's
+draw + resolve pairs were the expensive part (~50 us a pair).
+
+**Where the camp stands** (frozen save, standing still): ~16.5 ms full
+resolution (morning ~18.5), GPU-bound. Half resolution: ~14 ms with the GPU
+~75% busy; the limit there is the game's rendering thread ("3D Engine", ~88%
+busy, waits only on the upload ring): game code ~47%, our capture ~22% + libc
+(memmove of pulled buffers: `UploadVertexPullTable` ~10% of the thread, 47 MB a
+frame), `EmulateMemExportDraw` ~4%, hashing ~2%. The GameThread waits 60%.
+So below ~14 ms the next work is CPU: slice-only pulled copies, capture off the
+game's thread, game code speed.
