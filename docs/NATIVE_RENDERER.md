@@ -1044,3 +1044,32 @@ busy, waits only on the upload ring): game code ~47%, our capture ~22% + libc
 frame), `EmulateMemExportDraw` ~4%, hashing ~2%. The GameThread waits 60%.
 So below ~14 ms the next work is CPU: slice-only pulled copies, capture off the
 game's thread, game code speed.
+
+## 2026-11-14 evening: per-pass GPU time in the camp, more dead ends
+
+`fable2_diag_pass_gpu` (+ `--fable2_gpu_timing_every=1`), frozen camp save,
+GPU per frame ~15.8 ms of passes (each figure includes the copies after it):
+colour pass (1387 draws, 2x MSAA) 6.8; Z pass + scene depth copies 1.5;
+shadow maps (2) + their copies 1.5; screen shadow mask + depth copy 1.1; the
+final full-screen passes 0.74; a 2560x1536 full-screen pass (ps
+6d4968d5b2bc94c6, 2 draws) 0.68; bloom/blur + query pass 0.65; character
+texture bakes 0.58; their level-0 resolves + our mips ~0.4.
+Metal System Trace: vertex 5.2 ms, fragment 10.4 ms, blit 0.6 ms a frame.
+
+Found on the way: on timed frames every category timestamp inside a render
+pass ended it (plume) and Apple runs each timestamp as an encoder of its own
+(177 a frame): GPU timing now runs on one frame in 8 (977f7236, -0.2 ms). The
+chunk submit at the skipped late depth resolve split the colour pass too
+(fixed, same commit).
+
+Measured, no gain: drawing the occlusion query boxes twice (+0 ms: the query
+pass is cheap on the GPU; its CPU cost is the 64 KB pulled buffer copied for
+each of its 376 draws); the compensated position dot products (dotP) with a
+fused multiply-add instead of Dekker's split (no change, reverted).
+
+What remains is real work at 2x resolution with 2x MSAA. Next levers are
+projects: capture off the game's rendering thread (CPU wall ~14 ms at half
+resolution), plume's Metal backend (memoryless MSAA and resolve in tile
+memory, explicit store actions, less driver overhead), shadow-map depth
+hand-off (~0.3 ms), post-chain hand-offs (blocked by the 80x64 surface
+rounding).
