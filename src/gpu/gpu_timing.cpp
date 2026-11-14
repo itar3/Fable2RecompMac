@@ -36,6 +36,7 @@
 
 #include <rex/cvar.h>
 REXCVAR_DECLARE(bool, fable2_diag_pass_timing);
+REXCVAR_DECLARE(bool, fable2_diag_pass_gpu);
 REXCVAR_DEFINE_BOOL(fable2_gpu_timing, true, "Fable2",
                     "Native renderer: per-frame GPU timing by category (timestamps between draws of different kinds)");
 REXCVAR_DEFINE_INT32(fable2_gpu_timing_every, 8, "Fable2",
@@ -193,7 +194,9 @@ void GpuTimingFrameBegin(VideoState &s, plume::RenderCommandList *cmd, u32 slot)
 
 void GpuTimingMark(VideoState &s, plume::RenderCommandList *cmd, u32 cat) {
   (void)s;
-  if (!g_supported || !g_open || cat == g_cat || !cmd)
+  // A timestamp inside a render pass ends it (plume): per-pass timing keeps
+  // only the marks between passes.
+  if (!g_supported || !g_open || cat == g_cat || !cmd || REXCVAR_GET(fable2_diag_pass_gpu))
     return;
   WriteMark(g_slots[g_active_slot], cmd, g_cat);
   g_cat = cat;
@@ -218,7 +221,8 @@ bool DiagFrameNow(const VideoState &s) {
 }
 
 bool GpuTimingDiagActive(const VideoState &s) {
-  return g_supported && g_open && (g_slots[g_active_slot].diag || DiagFrameNow(s));
+  return g_supported && g_open &&
+         (g_slots[g_active_slot].diag || DiagFrameNow(s) || REXCVAR_GET(fable2_diag_pass_gpu));
 }
 
 void GpuTimingDiagMark(VideoState &s, plume::RenderCommandList *cmd, std::string tag, bool pass_mark) {
@@ -226,7 +230,7 @@ void GpuTimingDiagMark(VideoState &s, plume::RenderCommandList *cmd, std::string
     return;
   // Pass timing: only the marks between passes (a timestamp inside a pass
   // splits it on Apple GPUs).
-  if (REXCVAR_GET(fable2_diag_pass_timing) != pass_mark)
+  if ((REXCVAR_GET(fable2_diag_pass_timing) || REXCVAR_GET(fable2_diag_pass_gpu)) != pass_mark)
     return;
   auto &st = g_slots[g_active_slot];
   if (!st.diag) {
@@ -352,6 +356,31 @@ void GpuTimingCollect(VideoState &s, u32 slot) {
     for (size_t i = 0; i < order.size() && i < 80; ++i)
       EOT_INFO("[record]   {:.1f} us x{} max {:.1f}: {}", order[i].second.us, order[i].second.count,
                order[i].second.max, order[i].first);
+    st.diag = false;
+    st.tags.clear();
+  } else if (st.diag && REXCVAR_GET(fable2_diag_pass_gpu) && !DiagFrameNow(s)) {
+    static std::map<std::string, std::pair<f64, u32>> sums;
+    static u32 frames = 0;
+    for (size_t i = 1; i < n && i < st.tags.size(); ++i)
+      if (!st.tags[i].empty() && r[i] > r[i - 1]) {
+        auto &e = sums[st.tags[i]];
+        e.first += (r[i] - r[i - 1]) * 1e-3;
+        e.second++;
+      }
+    if (++frames >= 240) {
+      std::vector<std::pair<f64, std::string>> order;
+      for (const auto &[tag, e] : sums)
+        order.emplace_back(e.first / frames, std::format("{} (x{:.1f})", tag, f64(e.second) / frames));
+      std::sort(order.begin(), order.end(), std::greater<>());
+      f64 total = 0;
+      for (const auto &o : order)
+        total += o.first;
+      EOT_INFO("[pass-gpu] {} timed frames: {:.2f} ms of passes a frame", frames, total * 1e-3);
+      for (size_t i = 0; i < order.size() && i < 30; ++i)
+        EOT_INFO("[pass-gpu]   {:7.1f} us  {}", order[i].first, order[i].second);
+      sums.clear();
+      frames = 0;
+    }
     st.diag = false;
     st.tags.clear();
   } else if (st.diag) {

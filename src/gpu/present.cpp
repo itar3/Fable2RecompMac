@@ -70,6 +70,9 @@ REXCVAR_DEFINE_BOOL(fable2_present_pipelined, true, "Fable2",
                     "thread finishes this one (Present waits for the previous frame's present only)");
 REXCVAR_DEFINE_BOOL(fable2_barrier_keeps_pass, true, "Fable2",
                     "Native renderer (MoltenVK): layout changes of textures not attached to the render pass keep the pass");
+REXCVAR_DEFINE_BOOL(fable2_diag_pass_gpu, false, "Fable2",
+                    "Diagnostic: GPU time per render pass on the timed frames (timestamps between passes only), "
+                    "averaged and logged as [pass-gpu] every 240 timed frames");
 REXCVAR_DEFINE_BOOL(fable2_diag_pass_timing, false, "Fable2",
                     "Native renderer: diag frames time render passes (a timestamp before each pass begin) "
                     "instead of draws");
@@ -742,8 +745,22 @@ void LogPerfLocked(VideoState &s) {
     // Diag frames trace every render pass (begin size, and where it ended).
     plume::g_passTraceFn = [](bool begin, uint32_t w, uint32_t h, uint32_t attachments, const void *caller) {
       const i32 diag = Settings::DiagFrame();
-      if (diag <= 0 || state().guest_frames + 1 != static_cast<u64>(diag))
+      if (diag <= 0 || state().guest_frames + 1 != static_cast<u64>(diag)) {
+        // fable2_diag_pass_gpu: a timestamp at every pass begin of the timed
+        // frames, averaged per pass (ordinal in the frame + size).
+        if (begin && REXCVAR_GET(fable2_diag_pass_gpu) && GpuTimingDiagActive(state())) {
+          static u64 frame = ~0ull;
+          static u32 ordinal = 0;
+          if (frame != state().guest_frames) {
+            frame = state().guest_frames;
+            ordinal = 0;
+          }
+          GpuTimingDiagMark(state(), state().command_list,
+                            std::format("{}x{} att {}", w, h, attachments), true);
+          ++ordinal;
+        }
         return;
+      }
       // Images by short ids in order of first appearance this frame.
       static std::unordered_map<const void *, u32> ids;
       static u64 ids_frame = ~0ull;
@@ -935,7 +952,8 @@ void PresentLocked(VideoState &s, u32 front_buffer_texture_va) {
       front = nullptr;
   }
   PreloadAnnouncedTextures(s, PsoCacheInLoadingScreen() ? 8.0 : 1.0);
-  plume::g_passTrace.store(plume::g_passTraceFn && Settings::DiagFrame() > 0, std::memory_order_relaxed);
+  plume::g_passTrace.store(plume::g_passTraceFn && (Settings::DiagFrame() > 0 || REXCVAR_GET(fable2_diag_pass_gpu)),
+                           std::memory_order_relaxed);
   plume::g_lazyClears.store(REXCVAR_GET(fable2_lazy_clears), std::memory_order_relaxed);
   s.swap_chain->setVsyncEnabled(Settings::Vsync());
   if (!HandleResize(s)) {
