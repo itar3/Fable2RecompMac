@@ -4,8 +4,308 @@
 longjmp_address = 0x82CAFA30
 setjmp_address = 0x83006C90
 
+# Registers as local variables instead of fields of the context: the compiler
+# keeps them in host registers across the function (every PowerPC register was
+# a memory access before). The link register stays (skip_lr off): hooks tell
+# call sites apart by it (src/gpu/fable2_vblank.cpp).
+skip_msr = true
+ctr_as_local = true
+xer_as_local = true
+cr_as_local = true
+reserved_as_local = true
+non_argument_as_local = false
+non_volatile_as_local = true
+
+
+# The game thread's loop (sub_82276D10) yields while no logic tick is due: the
+# hook sleeps until shortly before the next one instead (src/cpu_idle.cpp) and
+# then skips the yield. It gets the loop's registers as arguments.
+[[midasm_hook]]
+name = "Fable2GameLoopYield"
+address = 0x82277344
+registers = ["r28", "f25", "f6"]
+jump_address_on_true = 0x82277348
+
+# Vector registers shared across a call. Two functions preload the non-volatile
+# vector registers (v64 and up) and call helpers that read them and leave
+# results in them (sub_822E16A8 -> sub_822340C8 in the renderer, sub_82DED5E0
+# -> sub_82DF48D8 / sub_82DF4BB8 / sub_82DF5010). With non_volatile_as_local
+# each function has its own copies, and the code generator only hands
+# general-purpose registers across calls, so hooks carry these (src/
+# vector_share.cpp): out of the caller after the instruction before the call,
+# into the helper at its entry, out of the helper before its return, back into
+# the caller after the call. Found with tools/nvshare_fv.py.
+# sub_822E16A8 -> sub_822340C8 (19 registers)
+[[midasm_hook]]
+name = "Fable2VecIn19"
+address = 0x822340C8
+registers = ["v64", "v76", "v77", "v78", "v79", "v80", "v81", "v82", "v83", "v84", "v85", "v86", "v87", "v88", "v90", "v91", "v92", "v93", "v94"]
+
+[[midasm_hook]]
+name = "Fable2VecOut19"
+address = 0x8223474C
+registers = ["v64", "v76", "v77", "v78", "v79", "v80", "v81", "v82", "v83", "v84", "v85", "v86", "v87", "v88", "v90", "v91", "v92", "v93", "v94"]
+
+[[midasm_hook]]
+name = "Fable2VecOut19"
+address = 0x822E1DE8
+registers = ["v64", "v76", "v77", "v78", "v79", "v80", "v81", "v82", "v83", "v84", "v85", "v86", "v87", "v88", "v90", "v91", "v92", "v93", "v94"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "Fable2VecIn19"
+address = 0x822E1DEC
+registers = ["v64", "v76", "v77", "v78", "v79", "v80", "v81", "v82", "v83", "v84", "v85", "v86", "v87", "v88", "v90", "v91", "v92", "v93", "v94"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "Fable2VecOut19"
+address = 0x822E1F64
+registers = ["v64", "v76", "v77", "v78", "v79", "v80", "v81", "v82", "v83", "v84", "v85", "v86", "v87", "v88", "v90", "v91", "v92", "v93", "v94"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "Fable2VecIn19"
+address = 0x822E1F68
+registers = ["v64", "v76", "v77", "v78", "v79", "v80", "v81", "v82", "v83", "v84", "v85", "v86", "v87", "v88", "v90", "v91", "v92", "v93", "v94"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "Fable2VecOut19"
+address = 0x822E20DC
+registers = ["v64", "v76", "v77", "v78", "v79", "v80", "v81", "v82", "v83", "v84", "v85", "v86", "v87", "v88", "v90", "v91", "v92", "v93", "v94"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "Fable2VecIn19"
+address = 0x822E20E0
+registers = ["v64", "v76", "v77", "v78", "v79", "v80", "v81", "v82", "v83", "v84", "v85", "v86", "v87", "v88", "v90", "v91", "v92", "v93", "v94"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "Fable2VecOut19"
+address = 0x822E2254
+registers = ["v64", "v76", "v77", "v78", "v79", "v80", "v81", "v82", "v83", "v84", "v85", "v86", "v87", "v88", "v90", "v91", "v92", "v93", "v94"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "Fable2VecIn19"
+address = 0x822E2258
+registers = ["v64", "v76", "v77", "v78", "v79", "v80", "v81", "v82", "v83", "v84", "v85", "v86", "v87", "v88", "v90", "v91", "v92", "v93", "v94"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "Fable2VecOut19"
+address = 0x822E23CC
+registers = ["v64", "v76", "v77", "v78", "v79", "v80", "v81", "v82", "v83", "v84", "v85", "v86", "v87", "v88", "v90", "v91", "v92", "v93", "v94"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "Fable2VecIn19"
+address = 0x822E23D0
+registers = ["v64", "v76", "v77", "v78", "v79", "v80", "v81", "v82", "v83", "v84", "v85", "v86", "v87", "v88", "v90", "v91", "v92", "v93", "v94"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "Fable2VecOut19"
+address = 0x822E2544
+registers = ["v64", "v76", "v77", "v78", "v79", "v80", "v81", "v82", "v83", "v84", "v85", "v86", "v87", "v88", "v90", "v91", "v92", "v93", "v94"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "Fable2VecIn19"
+address = 0x822E2548
+registers = ["v64", "v76", "v77", "v78", "v79", "v80", "v81", "v82", "v83", "v84", "v85", "v86", "v87", "v88", "v90", "v91", "v92", "v93", "v94"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "Fable2VecOut19"
+address = 0x822E26B0
+registers = ["v64", "v76", "v77", "v78", "v79", "v80", "v81", "v82", "v83", "v84", "v85", "v86", "v87", "v88", "v90", "v91", "v92", "v93", "v94"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "Fable2VecIn19"
+address = 0x822E26B4
+registers = ["v64", "v76", "v77", "v78", "v79", "v80", "v81", "v82", "v83", "v84", "v85", "v86", "v87", "v88", "v90", "v91", "v92", "v93", "v94"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "Fable2VecOut19"
+address = 0x822E2858
+registers = ["v64", "v76", "v77", "v78", "v79", "v80", "v81", "v82", "v83", "v84", "v85", "v86", "v87", "v88", "v90", "v91", "v92", "v93", "v94"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "Fable2VecIn19"
+address = 0x822E285C
+registers = ["v64", "v76", "v77", "v78", "v79", "v80", "v81", "v82", "v83", "v84", "v85", "v86", "v87", "v88", "v90", "v91", "v92", "v93", "v94"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "Fable2VecOut19"
+address = 0x822E29D4
+registers = ["v64", "v76", "v77", "v78", "v79", "v80", "v81", "v82", "v83", "v84", "v85", "v86", "v87", "v88", "v90", "v91", "v92", "v93", "v94"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "Fable2VecIn19"
+address = 0x822E29D8
+registers = ["v64", "v76", "v77", "v78", "v79", "v80", "v81", "v82", "v83", "v84", "v85", "v86", "v87", "v88", "v90", "v91", "v92", "v93", "v94"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "Fable2VecOut19"
+address = 0x822E2B44
+registers = ["v64", "v76", "v77", "v78", "v79", "v80", "v81", "v82", "v83", "v84", "v85", "v86", "v87", "v88", "v90", "v91", "v92", "v93", "v94"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "Fable2VecIn19"
+address = 0x822E2B48
+registers = ["v64", "v76", "v77", "v78", "v79", "v80", "v81", "v82", "v83", "v84", "v85", "v86", "v87", "v88", "v90", "v91", "v92", "v93", "v94"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "Fable2VecOut19"
+address = 0x822E2CBC
+registers = ["v64", "v76", "v77", "v78", "v79", "v80", "v81", "v82", "v83", "v84", "v85", "v86", "v87", "v88", "v90", "v91", "v92", "v93", "v94"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "Fable2VecIn19"
+address = 0x822E2CC0
+registers = ["v64", "v76", "v77", "v78", "v79", "v80", "v81", "v82", "v83", "v84", "v85", "v86", "v87", "v88", "v90", "v91", "v92", "v93", "v94"]
+after_instruction = true
+
+# sub_82DED5E0 -> sub_82DF48D8 (16 registers)
+[[midasm_hook]]
+name = "Fable2VecIn16"
+address = 0x82DF48D8
+registers = ["v28", "v29", "v30", "v31", "v78", "v79", "v80", "v84", "v85", "v86", "v87", "v88", "v89", "v90", "v91", "v92"]
+
+[[midasm_hook]]
+name = "Fable2VecOut16"
+address = 0x82DF4BB0
+registers = ["v28", "v29", "v30", "v31", "v78", "v79", "v80", "v84", "v85", "v86", "v87", "v88", "v89", "v90", "v91", "v92"]
+
+[[midasm_hook]]
+name = "Fable2VecOut16"
+address = 0x82DED6E0
+registers = ["v28", "v29", "v30", "v31", "v78", "v79", "v80", "v84", "v85", "v86", "v87", "v88", "v89", "v90", "v91", "v92"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "Fable2VecIn16"
+address = 0x82DED6E4
+registers = ["v28", "v29", "v30", "v31", "v78", "v79", "v80", "v84", "v85", "v86", "v87", "v88", "v89", "v90", "v91", "v92"]
+after_instruction = true
+
+# sub_82DED5E0 -> sub_82DF4BB8 (9 registers)
+[[midasm_hook]]
+name = "Fable2VecIn9"
+address = 0x82DF4BB8
+registers = ["v84", "v85", "v86", "v87", "v88", "v89", "v90", "v91", "v92"]
+
+[[midasm_hook]]
+name = "Fable2VecOut9"
+address = 0x82DF4CDC
+registers = ["v84", "v85", "v86", "v87", "v88", "v89", "v90", "v91", "v92"]
+
+[[midasm_hook]]
+name = "Fable2VecOut9"
+address = 0x82DED7D8
+registers = ["v84", "v85", "v86", "v87", "v88", "v89", "v90", "v91", "v92"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "Fable2VecIn9"
+address = 0x82DED7DC
+registers = ["v84", "v85", "v86", "v87", "v88", "v89", "v90", "v91", "v92"]
+after_instruction = true
+
+# sub_82DED5E0 -> sub_82DF5010 (9 registers)
+[[midasm_hook]]
+name = "Fable2VecIn9"
+address = 0x82DF5010
+registers = ["v84", "v85", "v86", "v87", "v88", "v89", "v90", "v91", "v92"]
+
+[[midasm_hook]]
+name = "Fable2VecOut9"
+address = 0x82DF5580
+registers = ["v84", "v85", "v86", "v87", "v88", "v89", "v90", "v91", "v92"]
+
+[[midasm_hook]]
+name = "Fable2VecOut9"
+address = 0x82DED7A8
+registers = ["v84", "v85", "v86", "v87", "v88", "v89", "v90", "v91", "v92"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "Fable2VecIn9"
+address = 0x82DED7AC
+registers = ["v84", "v85", "v86", "v87", "v88", "v89", "v90", "v91", "v92"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "Fable2VecOut9"
+address = 0x82DED808
+registers = ["v84", "v85", "v86", "v87", "v88", "v89", "v90", "v91", "v92"]
+after_instruction = true
+
+[[midasm_hook]]
+name = "Fable2VecIn9"
+address = 0x82DED80C
+registers = ["v84", "v85", "v86", "v87", "v88", "v89", "v90", "v91", "v92"]
+after_instruction = true
 
 [functions]
+# SEH funclets that read or change their owner's non-volatile registers
+# (__finally bodies called by bl from the middle of their owner): they stay in
+# the context and the owner syncs its locals around the call. The code
+# generator finds funclets through scope tables, but not all of these; the list
+# comes from tools/nvshare.py (non-volatiles live into the function or written
+# without being saved, in the code generated without non_volatile_as_local).
+0x82239034 = { share_registers = true }
+0x82239730 = { share_registers = true }
+0x82CAAA64 = { share_registers = true }
+0x82CAACC8 = { share_registers = true }
+0x82CAB040 = { share_registers = true }
+0x82CAB2D8 = { share_registers = true }
+0x82CAB304 = { share_registers = true }
+0x82CAB42C = { share_registers = true }
+0x82CAB618 = { share_registers = true }
+0x82CAB940 = { share_registers = true }
+0x82CAE970 = { share_registers = true }
+0x82CAEA90 = { share_registers = true }
+0x82CAF360 = { share_registers = true }
+0x82CAF9F0 = { share_registers = true }
+0x82CAFF28 = { share_registers = true }
+0x82CB1B58 = { share_registers = true }
+0x82CB52C0 = { share_registers = true }
+0x82CB5764 = { share_registers = true }
+0x82CB58F0 = { share_registers = true }
+0x82CB5B48 = { share_registers = true }
+0x82CB5DEC = { share_registers = true }
+0x82CB6CC0 = { share_registers = true }
+0x82CBD17C = { share_registers = true }
+0x82CBD518 = { share_registers = true }
+0x82CBF2B4 = { share_registers = true }
+0x82CBF608 = { share_registers = true }
+0x82CBF8A4 = { share_registers = true }
+0x82CC0BF8 = { share_registers = true }
+0x82CC0E14 = { share_registers = true }
+0x82CC3214 = { share_registers = true }
+0x82CC6B48 = { share_registers = true }
+0x830077D0 = { share_registers = true }
+0x83007C4C = { share_registers = true }
+0x83008114 = { share_registers = true }
+0x83008268 = { share_registers = true }
+0x83009F24 = { share_registers = true }
+0x8300B198 = { share_registers = true }
+0x830F7110 = { share_registers = true }
+0x830F7290 = { share_registers = true }
+0x830F7B5C = { share_registers = true }
 0x82C061F0 = { parent = 0x82C03A58, size = 8 }
 0x82C06200 = { parent = 0x82C03AC0, size = 8 }
 0x82C06208 = { size = 8 }
@@ -272,7 +572,7 @@ setjmp_address = 0x83006C90
 0x82CAAD00 = { name = "rex__fwrite_nolock", size = 0x264 }
 0x82CAB078 = { name = "rex__flush", size = 0x94 }
 0x82CAB110 = { name = "rex__fflush_nolock", size = 0x78 }
-0x82CAB190 = { name = "rex_flsall", size = 0x174 }
+0x82CAB190 = { name = "rex_flsall", size = 0x148 }  # up to its __finally funclet at 0x82CAB2D8 (share_registers above)
 0x82CAB370 = { name = "rex_fflush", size = 0xBC }
 0x82CAB468 = { name = "rex__flushall", size = 0x8 }
 0x82CAB880 = { name = "rex_fflush_0", size = 0xC0 }

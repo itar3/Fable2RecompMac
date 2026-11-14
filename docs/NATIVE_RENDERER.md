@@ -942,3 +942,37 @@ TAA keeps its history at scene size today, so this is new work.
 MSAA load/store cost); moving capture work off the game's rendering thread
 (our render thread idles ~4 ms a frame); hand-off instead of copies for the
 2048x2048 shadow maps (blocked before by per-frame texture objects).
+
+## 2026-11-14: recompiler options (registers as locals)
+
+The game's rendering thread spends ~9 ms a frame in recompiled code in the
+Gypsy Camp, every PowerPC register a memory access. `Fable2_config.toml` now
+turns on `skip_msr`, `ctr_as_local`, `xer_as_local`, `cr_as_local`,
+`reserved_as_local` and `non_volatile_as_local`. Rendering thread CPU per frame
+in the camp (card 9, standing still): 12.71 -> 11.66 (all but cr) -> 11.02 ms
+(with cr); our capture work inside it stays 3.65. Cards 2, 3 and 9 pass with
+recordings, 0 errors. The frame time at full resolution does not move yet: the
+GPU sets it there.
+
+What the options needed (each found as a crash or a black world first):
+- SEH funclets that read or change their owner's non-volatile registers need
+  `share_registers`: 40 entries, listed by `tools/nvshare.py` (the SDK's own
+  detection misses funclets outside scope tables). `share_registers` on a
+  normal function is wrong: the save/restore helper calls are gone, so the
+  funclet syncs of other functions overwrite what it keeps in the context.
+- The game loop hook read registers from the context: now a mid-asm hook that
+  gets them as arguments (`Fable2GameLoopYield`, src/cpu_idle.cpp).
+- Two functions preload v64+ and call four helpers that read them and leave
+  results there: 38 mid-asm hooks hand the registers over
+  (src/vector_share.cpp; found by `tools/nvshare_fv.py`). Symptom: world black,
+  13,000 draws.
+- Condition flags are never shared across functions (`tools/crshare.py`: 0 at
+  entry; the only reads after a call follow an error raise that does not
+  return).
+- The analysis scripts split blocks at every branch (a first version did not
+  and could miss reads at a branch target; the result was the same set).
+
+Left off: `non_argument_as_local` (r0, r2, r11, r12, f0, v32-63). ~120 funclets
+get their owner's frame in r12, and the option has no per-function exception;
+it needs a hook pair per funclet call or an SDK change. `skip_lr` stays off:
+hooks tell call sites apart by the link register.

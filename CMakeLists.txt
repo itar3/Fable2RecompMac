@@ -35,6 +35,7 @@ set(FABLE2_SOURCES
     src/hooks.cpp
     src/critical_sections.cpp
     src/cpu_idle.cpp
+    src/vector_share.cpp
     src/scripted_input.cpp
     src/render_mode.cpp
     src/gpu_capture.cpp

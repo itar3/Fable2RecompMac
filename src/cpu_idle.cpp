@@ -3,7 +3,7 @@
 //
 // The game thread's fixed-step loop (sub_82276D10) reads
 // QueryPerformanceCounter and, while no new logic tick is due, calls
-// SwitchToThread (sub_82CC38E8) and reads the clock again. On the console it
+// SwitchToThread (sub_82CC38E8, at 0x82277344) and reads the clock again. On the console it
 // had a hardware thread to itself; here it kept a host core busy (about half
 // of it went to the yield and the clock, profiled at a 60 fps cap). At that
 // call the registers hold the loop's tick position f6 (fractional), its tick
@@ -28,21 +28,21 @@ REXCVAR_DEFINE_BOOL(fable2_sleep_waits, true, "Fable2",
                     "logic tick); false: spin as on the console");
 
 namespace {
-constexpr uint32_t kGameLoopYieldReturn = 0x82277348;  // after "bl SwitchToThread" in sub_82276D10
 constexpr double kWakeMargin = 0.0003;                 // wake early; the last stretch yields as before
 constexpr double kLongestSleep = 0.05;
 }  // namespace
 
-REX_EXTERN(__imp__sub_82CC38E8);
-extern "C" REX_FUNC(sub_82CC38E8) {
-  if (static_cast<uint32_t>(ctx.lr) == kGameLoopYieldReturn && REXCVAR_GET(fable2_sleep_waits)) {
-    const double rate = ctx.f25.f64;
-    const double remaining = rate > 0.0 ? (static_cast<double>(ctx.r28.s32) + 1.0 - ctx.f6.f64) / rate : 0.0;
-    if (remaining > kWakeMargin && remaining < 0.1) {
-      std::this_thread::sleep_for(std::chrono::duration<double>(std::min(remaining - kWakeMargin, kLongestSleep)));
-      ctx.r3.u64 = 1;  // TRUE: "switched" (the loop ignores it)
-      return;
-    }
+// Called by the generated code right before "bl SwitchToThread" at 0x82277344
+// ([[midasm_hook]] in Fable2_config.toml) with the loop's registers; true: slept,
+// skip the yield.
+bool Fable2GameLoopYield(PPCRegister &r28, PPCRegister &f25, PPCRegister &f6) {
+  if (!REXCVAR_GET(fable2_sleep_waits))
+    return false;
+  const double rate = f25.f64;
+  const double remaining = rate > 0.0 ? (static_cast<double>(r28.s32) + 1.0 - f6.f64) / rate : 0.0;
+  if (remaining > kWakeMargin && remaining < 0.1) {
+    std::this_thread::sleep_for(std::chrono::duration<double>(std::min(remaining - kWakeMargin, kLongestSleep)));
+    return true;
   }
-  __imp__sub_82CC38E8(ctx, base);
+  return false;
 }
