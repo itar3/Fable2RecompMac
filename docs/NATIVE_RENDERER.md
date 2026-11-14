@@ -1093,3 +1093,31 @@ rounding).
   gained nothing measurable: not worth a depth hand-off.
 - Measuring: background load (Steam, browser video) moves the camp by several
   ms and the game thread by 3 ms; check `top` first and compare in-session only.
+
+## 2026-11-14 night: where the camp's GPU time goes, per shader
+
+Instruments' "Metal GPU Counters" has a shader profiler. With
+`-DFABLE2_GPU_LABELS=ON` (entry points named after the guest hashes) and the
+pipelines rebuilt inside the recording (toggle `fable2_debug_nan_paint` right
+after it starts), `tools/gputrace/shaderprof.py` gives GPU time per shader.
+Camp: fragment 83%, vertex 12.5% (the 5 ms "vertex" of the system trace is
+mostly Apple's tiling, not vertex shaders). No dominant shader: terrain
+(52fe118f, 4df4addb) ~10.5%, walls (7c1ef445, 9a193feb, b950f34c) ~13%, cliff
+(189401da) ~5%, then a long tail at 1-3.5%. The terrain shader is short (4
+fetches, ~28 multiplies): the cost is coverage at 2x resolution and blended
+layers, not translation overhead. `graphics-compiler-spill-events`: ~30 encoders
+a frame run shaders spilling 48 bytes (a few 96).
+
+Measured, no gain (all reverted): the zero multiply as one select on the
+product instead of zeroing both factors (min(|a|,|b|) == 0); plain products
+when a factor is a finite nonzero literal (rare: 3 of 83 in the cliff shader).
+`fable2_zero_mul=false` "saves" ~1.9 ms only by losing geometry to NaN
+(see 2026-11-06): never a lever.
+
+`fable2_scene_keeps_zpass_depth` (off, 3db3ed92): the opaque scene keeps the
+emulated Z pass's depth; camp 17.09 -> 16.43 ms, same objects. Not exact: the
+11 ground-shadow quads (vs e6415e83 ps d2cc2e1c) are the only depth writers
+without stencil drawn after stencil writers in the opaque scene; stencil marks
+(0x12 characters / 0x02 / 0x00) of fragments hidden behind them are lost, and a
+full-screen pass (ps 1c457756) tests (stencil & 0x30) == 0x10 / 0x00. An exact
+version would keep the depth without those quads (a depth copy, ~0.3 ms).
