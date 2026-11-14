@@ -455,12 +455,19 @@ bool EmulateMemExportDraw(u32 device_va, const u32 *indices, u32 index_count, u3
   f32 scale[kFetchCount];
   for (u32 i = 0; i < kFetchCount; ++i)
     scale[i] = std::ldexp(1.0f, fetches[i].expAdjust);
+  // A direct-mapped table keyed like the rows themselves (full key check), a
+  // stamp per draw instead of clearing: a hash map lookup for each of ~20
+  // bone fetches per vertex was most of what was left of this emulation.
   struct Row {
+    u64 key;
+    u64 stamp;
     Vec4 value;
     bool ok;
   };
-  std::unordered_map<u64, Row> rows;
-  rows.reserve(256);
+  constexpr u32 kRowSlots = 1024;
+  static Row rows[kRowSlots];
+  static u64 stamp = 0;
+  ++stamp;
   for (u32 k = 0; k < n; ++k) {
     const u32 vertex = indices ? indices[k] : first + k;
     Vec4 r[32];
@@ -474,11 +481,14 @@ bool EmulateMemExportDraw(u32 device_va, const u32 *indices, u32 index_count, u3
       if (f.src != 0) {
         const u64 key = (u64(f.slot) << 56) ^ (u64(f.format) << 48) ^ (u64(f.flags & 0xFF) << 40) ^
                         (u64(u32(f.expAdjust) & 0xFF) << 32) ^ u64(u32(element));
-        auto [it, inserted] = rows.try_emplace(key);
-        if (inserted)
-          it->second.ok = Decode(streams[f.slot], element, f.format, f.flags, scale[i], it->second.value);
-        val = it->second.value;
-        ok = it->second.ok;
+        Row &row = rows[(key * 0x9E3779B97F4A7C15ull) >> 54];
+        if (row.stamp != stamp || row.key != key) {
+          row.key = key;
+          row.stamp = stamp;
+          row.ok = Decode(streams[f.slot], element, f.format, f.flags, scale[i], row.value);
+        }
+        val = row.value;
+        ok = row.ok;
       } else {
         ok = Decode(streams[f.slot], element, f.format, f.flags, scale[i], val);
       }
