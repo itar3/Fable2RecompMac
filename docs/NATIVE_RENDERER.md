@@ -1073,3 +1073,23 @@ resolution), plume's Metal backend (memoryless MSAA and resolve in tile
 memory, explicit store actions, less driver overhead), shadow-map depth
 hand-off (~0.3 ms), post-chain hand-offs (blocked by the 80x64 surface
 rounding).
+
+## 2026-11-14 late: CPU side (game's rendering thread) and the shadow copies
+
+- Occlusion query boxes (909581d1, `fable2_pull_slices`): each of ~380 draws
+  copied the whole 64 KB box buffer to read one 32-byte box (element =
+  (vertex + 0.5) / trunc(c48.x)); now only that box is copied into the
+  buffer's room in the ring. Game thread CPU 11.87 -> 11.27 ms (A/B).
+- Skinning emulation (bc5b9218): bone rows from a direct-mapped table instead
+  of an unordered_map lookup per bone fetch. Together: our share of the 3D
+  Engine thread 31.4% -> 27.4%, half-resolution camp 13.7 -> 13.2 ms (the
+  CPU wall), capture 3.27 -> 2.92 ms.
+- Left as is: `GetMirror` hashes small buffers whole on purpose (the game
+  rewrites some in place); the rest of capture is many small parts
+  (CaptureDraw itself 4.1%, texture headers 2.3%, swaps 1.8%, mutexes 1.8%).
+- Shadow maps: two whole 2048x2048 same-format depth copies into a rotating
+  pool of textures each frame (`fable2_diag_redirect`): a hand-off case, not
+  the atlas redirect. Skipping both (`fable2_debug_skip_shadow_resolves`)
+  gained nothing measurable: not worth a depth hand-off.
+- Measuring: background load (Steam, browser video) moves the camp by several
+  ms and the game thread by 3 ms; check `top` first and compare in-session only.
