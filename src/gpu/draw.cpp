@@ -73,6 +73,9 @@ REXCVAR_DEFINE_BOOL(fable2_diag_morph, false, "Fable2",
 REXCVAR_DEFINE_BOOL(fable2_pool_spare, true, "Fable2", "Native renderer: geometry cache pools make their next chunk ahead on a background thread");
 REXCVAR_DEFINE_BOOL(fable2_pull_mirrors, true, "Fable2", "Native renderer: vertex-pulled stream buffers come from the mirror cache instead of a copy per draw");
 REXCVAR_DEFINE_BOOL(fable2_debug_skip_256_draws, false, "Fable2", "Debug: skip colour draws into 256-pixel-wide targets (cost test)");
+REXCVAR_DEFINE_BOOL(fable2_pull_slices, true, "Fable2",
+                    "Native renderer: pulled buffers are copied only where a draw reads them, for vertex shaders "
+                    "whose element index is a known function of the vertex index (the occlusion query boxes)");
 REXCVAR_DEFINE_BOOL(fable2_debug_query_boxes_twice, false, "Fable2",
                     "Debug: the occlusion query pass draws each box twice (cost test)");
 REXCVAR_DEFINE_BOOL(fable2_diag_bake, false, "Fable2",
@@ -1024,8 +1027,40 @@ void NotePopCandidate(u64 key, u64 frame) {
 u64 PulledBufferAddress(VideoState &s, const StreamInfo &st, u64 bytes, const u8 *src, bool preswap);
 extern u64 pk_vs_hash_for_diag;
 
+// The bytes of a pulled buffer one draw can read, for vertex shaders whose
+// element index is a known function of the vertex index (0 = whole buffer).
+// The occlusion query boxes (vs 8f1c881c15849337): element = (vertex + 0.5) /
+// trunc(c48.x), 8 dwords each, from a 64 KB buffer the game rewrites between
+// its ~380 draws a frame; each draw reads one box.
+bool PulledSlice(DeviceView dev, const GuestShader &vs, u32 slot, u32 dwords, u32 vtx_lo, u32 vtx_hi,
+                 u32 *first_dword, u32 *count_dwords) {
+  if (!REXCVAR_GET(fable2_pull_slices) || vs.hash != 0x8f1c881c15849337ull || slot != 93 || vtx_hi < vtx_lo)
+    return false;
+  const u32 raw = dev.U32(dev::kVsFloatConstants + 48 * 16);
+  float k;
+  std::memcpy(&k, &raw, 4);
+  k = std::trunc(k);
+  if (!(k >= 1.0f && k <= 65536.0f))
+    return false;
+  const u32 e0 = static_cast<u32>((static_cast<f64>(vtx_lo) + 0.5) / k);
+  const u32 e1 = static_cast<u32>((static_cast<f64>(vtx_hi) + 0.5) / k);
+  const u64 from = u64(e0) * 8, to = (u64(e1) + 1) * 8;
+  if (from >= dwords)
+    return false;
+  *first_dword = static_cast<u32>(from);
+  *count_dwords = static_cast<u32>(std::min<u64>(to, dwords) - from);
+  static u32 logged = 0;
+  if (logged < 3) {
+    ++logged;
+    EOT_INFO("[pull] slice: vertices {}-{} k {} -> elements {}-{} ({} of {} dwords)", vtx_lo, vtx_hi, k, e0, e1,
+             *count_dwords, dwords);
+  }
+  return true;
+}
+
 bool UploadVertexPullTable(DeviceView dev, const GuestShader &vs, const std::vector<u8> &pulled_slots,
-                           u64 *table_va, u32 stream0_va = 0, u32 stream0_bytes = 0) {
+                           u64 *table_va, u32 stream0_va = 0, u32 stream0_bytes = 0, u32 vtx_lo = 0,
+                           u32 vtx_hi = 0) {
   struct Entry {
     u64 address;
     u32 sizeDwords;
@@ -1097,6 +1132,21 @@ bool UploadVertexPullTable(DeviceView dev, const GuestShader &vs, const std::vec
     // 8-in-32 data is swapped here, while it is copied anyway: the vertex
     // shader then skips the per-dword swap (skinning reads ~48 dwords a vertex).
     const bool preswap = REXCVAR_GET(fable2_pull_preswap) && (d1 & 3) == 2;
+    u32 slice_first = 0, slice_count = 0;
+    if (PulledSlice(dev, vs, slot, dwords, vtx_lo, vtx_hi, &slice_first, &slice_count)) {
+      // The whole buffer's room, only the slice copied: the shader's
+      // addressing stays as it is and reads nothing else.
+      if (!UploadAllocate(u64(dwords) * 4, 16, &data))
+        return false;
+      if (preswap)
+        rex::memory::copy_and_swap_32_unaligned(data.cpu + u64(slice_first) * 4,
+                                                reinterpret_cast<const u32 *>(src) + slice_first, slice_count);
+      else
+        std::memcpy(data.cpu + u64(slice_first) * 4, src + u64(slice_first) * 4, u64(slice_count) * 4);
+      state().perf.pull_bytes += u64(slice_count) * 4;
+      table[slot] = {data.gpuVa, dwords, (d1 & 3) | (preswap ? 0x10u : 0u)};
+      continue;
+    }
     if (preswap) {
       if (!UploadAllocate(u64(dwords) * 4, 16, &data))
         return false;
@@ -3135,9 +3185,15 @@ bool CaptureDraw(VideoState &s, u32 device_va, u32 prim, GeometryPlan &geom,
     // wherever SetStreamSource last left it, and they drew phantom trees).
     const bool up_stream = geom.stream0OverrideVa && !REXCVAR_GET(fable2_pull_up_stream_vs).empty() &&
                            DrawMatchesList(REXCVAR_GET(fable2_pull_up_stream_vs), vs->hash, 0);
+    u32 vtx_lo = 0, vtx_hi = 0;
+    if (!geom.indexed && !geom.rectList && geom.vertexCount) {  // the vertices this draw reads
+      vtx_lo = geom.startVertex;
+      vtx_hi = geom.startVertex + geom.vertexCount - 1;
+    }
     if (!UploadVertexPullTable(dev, *vs, pulled_slots, &pk.vertex_pull_table,
                                up_stream ? geom.stream0OverrideVa : 0u,
-                               up_stream ? geom.vertexCount * geom.stream0OverrideStride : 0u)) {
+                               up_stream ? geom.vertexCount * geom.stream0OverrideStride : 0u, vtx_lo,
+                               vtx_hi)) {
       Dropped("vertex pulling upload failed", 0x6030);
       return false;
     }
