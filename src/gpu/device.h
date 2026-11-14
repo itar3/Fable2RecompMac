@@ -319,6 +319,10 @@ struct VideoState {
   u64 guest_frames = 0;
   // Xbox 360 Z-pass emulation: the draw being replayed fills depth only.
   bool depth_prerun = false;
+  // fable2_scene_keeps_zpass_depth: the scene draws on the emulated Z pass's
+  // depth (from it until the scene depth resolve), this surface.
+  bool scene_keeps_zpass_depth = false;
+  u32 scene_depth_va = 0;
   u64 captured_presents = 0;
 
   std::vector<std::unique_ptr<plume::RenderTexture>> texture_graveyard[kNumFrames];

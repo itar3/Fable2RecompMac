@@ -20,6 +20,12 @@ endif()
 
 set(PLUME_D3D12_AGILITY_SDK_ENABLED OFF CACHE BOOL "" FORCE)
 add_subdirectory("${FABLE2_PLUME_DIR}" "${CMAKE_BINARY_DIR}/plume" EXCLUDE_FROM_ALL)
+# GPU tools (Instruments' shader profiler, Xcode captures) see the guest
+# shader hashes as Vulkan object names (VK_EXT_debug_utils through MoltenVK).
+option(FABLE2_GPU_LABELS "Name Vulkan objects after the guest shaders for GPU tools" OFF)
+if(FABLE2_GPU_LABELS)
+    target_compile_definitions(plume PRIVATE VULKAN_OBJECT_NAMES_ENABLED)
+endif()
 
 set(ZSTD_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
 set(ZSTD_BUILD_SHARED OFF CACHE BOOL "" FORCE)
@@ -121,6 +127,9 @@ target_include_directories(Fable2 PRIVATE
 target_compile_definitions(Fable2 PRIVATE FABLE2_NATIVE_RENDERER EOT_MVK NOMINMAX)
 if(FABLE2_CONSTANT_BUFFERS)
     target_compile_definitions(Fable2 PRIVATE FABLE2_CONSTANT_BUFFERS)
+endif()
+if(FABLE2_GPU_LABELS)
+    target_compile_definitions(Fable2 PRIVATE FABLE2_GPU_LABELS)
 endif()
 # Runtime shader translation (src/gpu/shaders/runtime_shaders.cpp): the
 # translator and shader header this build used.

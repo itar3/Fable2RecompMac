@@ -39,6 +39,10 @@ REXCVAR_DECLARE(bool, fable2_zpass_restore_depth);
 // thread's next frame overlapped the render thread's end-of-frame work (frame
 // slot recycling, texture/buffer retirement, bookkeeping), which is not safe
 // against concurrent capture yet.
+REXCVAR_DEFINE_BOOL(fable2_scene_keeps_zpass_depth, false, "Fable2",
+                    "Native renderer: the scene's opaque draws keep the emulated Z pass's depth (hidden "
+                    "fragments, alpha-tested ones too, are rejected before shading; strict depth tests of "
+                    "depth-writing draws become or-equal)");
 REXCVAR_DEFINE_BOOL(fable2_zpass_skip_late_resolve, true, "Fable2",
                     "Native renderer: the game's own scene depth resolve is skipped when the emulated Z pass "
                     "already made it from the same draws (the scene's colour pass then stays one render pass)");
@@ -146,6 +150,8 @@ void Execute(VideoState &s, Queue &q, RenderCommand &c) {
     ReplayClearLocked(s, c.clear);
     break;
   case RenderCommandType::Resolve:
+    if (c.seq && c.seq == g_prerun_resolve_seq)
+      s.scene_keeps_zpass_depth = false;  // the opaque scene ends here
     if (c.seq && c.seq == g_prerun_resolve_seq && REXCVAR_GET(fable2_zpass_skip_late_resolve) &&
         !(c.resolve.flags & 0x300)) {
       // Same draws, same start depth (put back after the Z pass): same result.
@@ -377,7 +383,10 @@ void DepthPrerun(VideoState &s, Queue &q, u64 head) {
       EOT_INFO("[zpass] scene depth resolve flags {:#x} (late copy {})", depth.flags,
                depth.flags & 0x300 ? "kept: it clears" : "skippable");
   }
-  if (dimg && dimg->texture.get() == dimg_texture) {
+  const bool keep_depth = REXCVAR_GET(fable2_scene_keeps_zpass_depth);
+  s.scene_keeps_zpass_depth = keep_depth;
+  s.scene_depth_va = depth.srcVa;
+  if (dimg && dimg->texture.get() == dimg_texture && !keep_depth) {
     if (saved && s.command_list_open) {
       const HostTextureTransition transitions[] = {{&spare, plume::RenderTextureLayout::COPY_SOURCE},
                                                    {dimg, plume::RenderTextureLayout::COPY_DEST}};

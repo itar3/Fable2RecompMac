@@ -701,6 +701,22 @@ plume::RenderShader *GetHostShaderByHash(VideoState &s, u64 hash, u32 spec_mask,
     bytes = nullptr;
   }
 #endif
+#if defined(FABLE2_GPU_LABELS) && !defined(EOT_D3D12)
+  // GPU tools name shaders by entry point: "shaderMain" (10 characters, 3
+  // words with its padding) becomes p/v + 10 hex digits of the guest hash.
+  std::vector<u8> renamed;
+  if (bytes && size) {
+    renamed.assign(bytes, bytes + size);
+    static const char kOld[12] = {'s', 'h', 'a', 'd', 'e', 'r', 'M', 'a', 'i', 'n', 0, 0};
+    char name[12] = {};
+    std::snprintf(name, sizeof(name), "%c%010llx", is_pixel ? 'p' : 'v',
+                  static_cast<unsigned long long>(hash >> 24));
+    for (size_t i = 0; i + 12 <= renamed.size(); i += 4)
+      if (std::memcmp(renamed.data() + i, kOld, 12) == 0)
+        std::memcpy(renamed.data() + i, name, 12);
+    bytes = renamed.data();
+  }
+#endif
   if (bytes && size) {
     (void)worker;
     host = s.device->createShader(bytes, size, GuestEntryPoint(bytes, size).c_str(), kHostShaderFormat);

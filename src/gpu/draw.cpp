@@ -2274,6 +2274,16 @@ void FillPipelineState(DeviceView dev, const Targets &t, PipelineState &st,
   st.depthEnable = z_test || st.depthWrite;
   st.depthFunc = z_test ? ConvertCompareFunc((dc >> 4) & 7)
                         : plume::RenderComparisonFunction::ALWAYS;
+  // The scene on the Z pass's depth: its depth-writing draws meet their own
+  // depth there, so strict tests become or-equal (the rest already are).
+  if (state().scene_keeps_zpass_depth && st.depthWrite && z_test && t.depth &&
+      t.depth->va == state().scene_depth_va && !state().depth_prerun) {
+    const u32 zfunc = (dc >> 4) & 7;
+    if (zfunc == 4)
+      st.depthFunc = plume::RenderComparisonFunction::GREATER_EQUAL;
+    else if (zfunc == 1)
+      st.depthFunc = plume::RenderComparisonFunction::LESS_EQUAL;
+  }
   // Debug (missing ground): run-time overrides.
   if (REXCVAR_GET(fable2_debug_depth_always))
     st.depthFunc = plume::RenderComparisonFunction::ALWAYS;
@@ -3708,6 +3718,7 @@ void ReplayDraw(VideoState &s, const DrawPacket &pk) {
   constexpr u32 kSharedTextureBytes = offsetof(SharedConstants, booleans);
   static_assert(kSharedTextureBytes == 20 * 16);
   struct ReplayMemo {
+  bool keepDepth = false;  // made while the scene kept the Z pass depth
     bool valid = false;
     GuestShader *vs = nullptr, *ps = nullptr;
     const InputLayout *layout = nullptr;
@@ -3759,7 +3770,8 @@ void ReplayDraw(VideoState &s, const DrawPacket &pk) {
   for (ReplayMemo &m : memos) {
     if (s.depth_prerun)
       break;
-    if (m.valid && m.vs == vs && m.ps == ps && m.layout == layout && m.topology == pk.topology &&
+    if (m.valid && m.keepDepth == s.scene_keeps_zpass_depth && m.vs == vs && m.ps == ps && m.layout == layout &&
+        m.topology == pk.topology &&
         m.jitterIndex == jitter_index &&
         m.rectList == pk.rectList && std::memcmp(m.strides, pk.strides, sizeof(pk.strides)) == 0 &&
         std::memcmp(m.state, state_block, sizeof(m.state)) == 0 &&
@@ -4253,6 +4265,7 @@ void ReplayDraw(VideoState &s, const DrawPacket &pk) {
     }
     ReplayMemo &fill = s.depth_prerun ? prerun_scratch : memo ? *memo : memos[memo_next++ % kReplayMemoWays];
     fill.valid = !s.depth_prerun;
+    fill.keepDepth = s.scene_keeps_zpass_depth;
     fill.vs = vs;
     fill.ps = ps;
     fill.layout = layout;
