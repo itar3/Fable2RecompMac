@@ -995,3 +995,28 @@ is ~50 us, so this is ~2-4 ms of the 18.
 Also seen: **123 dropped draws a frame, "point sprites not supported yet"**
 (vs 0x4cc113b0 / 0x4c139590), inside those chains: something the game draws
 is missing from the picture; find out what.
+
+## 2026-11-14: character texture mips on the GPU (camp -1.9 ms)
+
+The ten (in fact ~12) 8-pass chains of the camp's pass list: each frame the
+game renders ~12 characters into 256x256 `k_1_5_5_5` textures with 4 levels
+(probably per-character shadow textures) and builds levels 1-3 itself. The
+dest textures rotate through a pool; `fable2_diag_bake` showed every bake's
+constants change every frame (animation), so caching is out.
+`fable2_debug_skip_bake_chains` (cost test, picture wrong): skipping the mip
+draws and the 4 resolves per chain = -2.2 ms GPU, about 26 us per small pass.
+`fable2_bake_auto_mips` (default on, e22ff475): the capture side drops the
+game's per-level draw (ps 2cb8bcd53db53c93) + resolve while the sequence
+follows the exact pattern (anything else breaks the chain, logged as
+`[auto-mips]`); the level-0 resolve's replay builds levels 1-3 with
+`GenerateMipsLocked` (blit_ps mode 4: one bilinear sample of the level above,
+rounded to 5-5-5-1 bits like the resolves). The game made levels 2-3 at 1x
+scale and stretched them; ours are full resolution. Camp A/B 19.19 -> 17.32 ms;
+cards 2, 3, 9: 0 errors, pictures unchanged.
+Still per chain: the bake pass, the level-0 resolve (a pass: rounding to 5 bits
+needs a shader) and our 3 mip passes. A compute pass building all levels would
+save 2 more passes per chain (~0.6 ms); rendering the bake straight into level
+0 would need look-ahead (the replay streams commands).
+The "123 dropped point sprite draws" are the memexport passes (never visible)
+and the night sky's stars (vs 867a1ee73bc31ea7 / ps e14feb99dd4adc46, 512
+points, g_StarParams): stars are missing at night, not a cost.
